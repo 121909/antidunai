@@ -42,6 +42,19 @@ def test_burst_guard_csv_values_are_normalized(tmp_path: Path) -> None:
     assert settings.is_burst_guard_target(999, None) is False
 
 
+def test_burst_guard_csv_values_load_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("BURST_GUARD_TARGETS", "123456,@Some_User")
+    monkeypatch.setenv("BURST_GUARD_VIDEO_PLATFORMS", "douyin,bilibili,youtube")
+
+    settings = make_settings(tmp_path)
+
+    assert settings.burst_guard_targets == frozenset({"123456", "some_user"})
+    assert settings.burst_guard_video_platforms == frozenset({"douyin", "bilibili", "youtube"})
+
+
 def test_burst_guard_target_id_takes_precedence_over_missing_username(tmp_path: Path) -> None:
     settings = make_settings(tmp_path, burst_guard_targets=["123456", "named_user"])
 

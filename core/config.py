@@ -1,14 +1,16 @@
 import os
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from sqlalchemy import make_url
 
 load_dotenv()
+
+CsvValues = Annotated[frozenset[str], NoDecode]
 
 
 class BotSettings(BaseSettings):
@@ -36,9 +38,9 @@ class BotSettings(BaseSettings):
     # 冷却期内每 RATE_LIMIT_THROTTLE_WINDOW 秒最多允许 RATE_LIMIT_THROTTLE 次解析.
 
     burst_guard_enabled: bool = Field(default=False, description="启用群组视频刷屏治理")
-    burst_guard_targets: frozenset[str] = Field(default_factory=frozenset, description="目标用户 ID 或用户名")
+    burst_guard_targets: CsvValues = Field(default_factory=frozenset, description="目标用户 ID 或用户名")
     burst_guard_threshold: int = Field(default=3, ge=3, description="触发治理的连续候选消息数")
-    burst_guard_video_platforms: frozenset[str] = Field(
+    burst_guard_video_platforms: CsvValues = Field(
         default_factory=frozenset,
         description="计入治理的视频平台 ID 白名单",
     )
