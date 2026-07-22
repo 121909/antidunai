@@ -164,11 +164,11 @@
 - [x] 4. 完成群消息监听与连续段识别。
 - [x] 5. 重构解析发送路径并接入 `OutputTracker`。
 - [x] 6. 完成批量删除、取消任务、异常处理和日志。
-- [ ] 7. 执行单元测试、集成测试、`ruff` 与 `mypy`。
+- [x] 7. 执行单元测试、集成测试、`ruff` 与 `mypy`。
 - [ ] 8. 在测试群完成真实 Telegram API 验收。
-- [ ] 9. 检查 `git diff`、配置示例和文档，确认没有 Token、API Hash 或群组隐私数据。
-- [ ] 10. 执行 `git remote -v`，确认推送目标为 `antidunai` 的 `origin`。
-- [ ] 11. 仅执行显式的 `git push origin feature/burst-video-guard`，禁止向 `parse_hub_bot` 上游推送。
+- [x] 9. 检查 `git diff`、配置示例和文档，确认没有 Token、API Hash 或群组隐私数据。
+- [x] 10. 执行 `git remote -v`，确认推送目标为 `antidunai` 的 `origin`。
+- [x] 11. 仅执行显式的 `git push origin feature/burst-video-guard`，禁止向 `parse_hub_bot` 上游推送。
 
 ## 14. 完成标准
 
