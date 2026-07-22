@@ -9,6 +9,7 @@ from burst_guard.config import Settings
 from burst_guard.logging import log_event
 from burst_guard.metrics import Metrics
 from burst_guard.models import IncomingMessage
+from burst_guard.notifications import SanctionNotifier
 from burst_guard.state import BurstStateService
 
 
@@ -72,12 +73,15 @@ class TelegramUpdateHandler:
         cleanup: CleanupService,
         metrics: Metrics,
         logger: logging.Logger,
+        *,
+        notifier: SanctionNotifier | None = None,
     ) -> None:
         self._settings = settings
         self._state = state
         self._cleanup = cleanup
         self._metrics = metrics
         self._logger = logger
+        self._notifier = notifier
 
     async def __call__(self, event: Any) -> None:
         if not self._settings.enabled:
@@ -151,7 +155,14 @@ class TelegramUpdateHandler:
             candidate=candidate,
         )
         if result.cleanup is not None:
-            await self._cleanup.execute(result.cleanup)
+            report = await self._cleanup.execute(result.cleanup)
+            if self._notifier is not None and report.deleted > 0 and target_key is not None:
+                await self._notifier.notify(
+                    chat_id=incoming.chat_id,
+                    target_key=target_key,
+                    sender_id=incoming.sender_id,
+                    sender_username=incoming.sender_username,
+                )
 
     async def _handle_parser_output(
         self,

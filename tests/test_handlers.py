@@ -88,6 +88,24 @@ class FakeCleanup:
         return CleanupReport(planned=len(request.message_ids))
 
 
+class SuccessfulCleanup(FakeCleanup):
+    async def execute(self, request: CleanupRequest) -> CleanupReport:
+        await super().execute(request)
+        return CleanupReport(
+            planned=len(request.message_ids),
+            deleted=len(request.message_ids),
+        )
+
+
+class FakeNotifier:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def notify(self, **values: object) -> bool:
+        self.calls.append(values)
+        return True
+
+
 def make_handler(
     settings: Settings,
 ) -> tuple[TelegramUpdateHandler, BurstStateService, FakeCleanup, Metrics]:
@@ -397,3 +415,49 @@ async def test_parser_source_link_takes_priority_and_normalizes_share_parameters
     await handler(FakeEvent(21, 7947627028, video=True))
 
     assert [request.message_ids for request in cleanup.requests] == [(2, 3), (21,)]
+
+
+@pytest.mark.asyncio
+async def test_successful_threshold_cleanup_notifies_once_but_parser_cleanup_does_not(
+    settings_factory: Callable[..., Settings],
+) -> None:
+    settings = settings_factory(group_size=5)
+    state = BurstStateService(
+        settings.threshold,
+        60,
+        group_size=settings.group_size,
+        random_source=ZeroRandom(),
+    )
+    cleanup = SuccessfulCleanup(state)
+    notifier = FakeNotifier()
+    handler = TelegramUpdateHandler(
+        settings,
+        state,
+        cleanup,
+        Metrics(),
+        logging.getLogger("test-handler"),
+        notifier=notifier,  # type: ignore[arg-type]
+    )
+
+    await handler(FakeEvent(1, 101, username="video_user", text="https://youtube.com/watch?v=1"))
+    await handler(FakeEvent(2, 101, username="video_user", text="https://youtube.com/watch?v=2"))
+    await handler(FakeEvent(3, 101, username="video_user", text="https://youtube.com/watch?v=3"))
+    await handler(
+        FakeEvent(
+            20,
+            500,
+            bot=True,
+            video=True,
+            text="https://youtube.com/watch?v=2",
+        )
+    )
+
+    assert notifier.calls == [
+        {
+            "chat_id": -1001,
+            "target_key": "id:101",
+            "sender_id": 101,
+            "sender_username": "video_user",
+        }
+    ]
+    assert [request.message_ids for request in cleanup.requests] == [(2, 3), (20,)]

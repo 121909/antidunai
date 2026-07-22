@@ -14,6 +14,7 @@ from burst_guard.handlers import TelegramUpdateHandler
 from burst_guard.health import HealthServer, HealthState
 from burst_guard.logging import configure_logging, log_event
 from burst_guard.metrics import Metrics
+from burst_guard.notifications import SanctionNotifier
 from burst_guard.preflight import run_preflight
 from burst_guard.session_lock import SessionLock
 from burst_guard.state import BurstStateService
@@ -25,6 +26,20 @@ class TelegramDeleteAdapter:
 
     async def delete_messages(self, entity: int, message_ids: Any) -> object:
         return await self._client.delete_messages(entity, message_ids)
+
+
+class TelegramMessageAdapter:
+    def __init__(self, client: TelegramClient) -> None:
+        self._client = client
+
+    async def send_message(
+        self,
+        entity: int,
+        message: str,
+        *,
+        parse_mode: object | None = None,
+    ) -> object:
+        return await self._client.send_message(entity, message, parse_mode=parse_mode)
 
 
 async def _state_janitor(state: BurstStateService, interval: float, logger: logging.Logger) -> None:
@@ -56,7 +71,15 @@ async def run_service(settings: Settings) -> None:
         metrics=metrics,
         logger=logger,
     )
-    handler = TelegramUpdateHandler(settings, state, cleanup, metrics, logger)
+    notifier = SanctionNotifier(TelegramMessageAdapter(client), metrics, logger)
+    handler = TelegramUpdateHandler(
+        settings,
+        state,
+        cleanup,
+        metrics,
+        logger,
+        notifier=notifier,
+    )
     health_state = HealthState(config_valid=True)
     health = HealthServer(
         settings.health_host, settings.health_port, health_state, client.is_connected
