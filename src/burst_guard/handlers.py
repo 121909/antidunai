@@ -23,6 +23,17 @@ def _entity_urls(message: Any) -> tuple[str, ...]:
         for entity, text in get_entities_text():
             if type(entity).__name__ == "MessageEntityUrl" and text:
                 urls.append(str(text))
+    reply_markup = getattr(message, "reply_markup", None)
+    for row in getattr(reply_markup, "rows", None) or ():
+        for button in getattr(row, "buttons", None) or ():
+            button_url = getattr(button, "url", None)
+            if button_url:
+                urls.append(str(button_url))
+    web_preview = getattr(message, "web_preview", None)
+    for attribute in ("url", "display_url"):
+        preview_url = getattr(web_preview, attribute, None)
+        if preview_url:
+            urls.append(str(preview_url))
     return tuple(urls)
 
 
@@ -79,12 +90,17 @@ class TelegramUpdateHandler:
         incoming = to_incoming_message(event, sender)
         if incoming.sender_id == self._settings.telegram_expected_user_id:
             return
+        target_key = self._settings.target_key(incoming.sender_id, incoming.sender_username)
         if getattr(sender, "bot", False):
             await self._handle_parser_output(incoming)
             return
+        if target_key is None and has_video_media(incoming):
+            parser_url_keys = candidate_url_keys(incoming, self._settings.video_domains)
+            if parser_url_keys:
+                await self._handle_parser_output(incoming, parser_url_keys)
+                return
         self._metrics.increment("group_messages_received")
 
-        target_key = self._settings.target_key(incoming.sender_id, incoming.sender_username)
         url_keys = (
             candidate_url_keys(incoming, self._settings.video_domains)
             if target_key is not None
@@ -122,10 +138,15 @@ class TelegramUpdateHandler:
         if result.cleanup is not None:
             await self._cleanup.execute(result.cleanup)
 
-    async def _handle_parser_output(self, incoming: IncomingMessage) -> None:
+    async def _handle_parser_output(
+        self,
+        incoming: IncomingMessage,
+        url_keys: frozenset[str] | None = None,
+    ) -> None:
         if not has_video_media(incoming):
             return
-        url_keys = candidate_url_keys(incoming, self._settings.video_domains)
+        if url_keys is None:
+            url_keys = candidate_url_keys(incoming, self._settings.video_domains)
         if not url_keys:
             return
         self._metrics.increment("parser_outputs_received")

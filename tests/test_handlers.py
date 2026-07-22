@@ -29,6 +29,8 @@ class FakeMessage:
         out: bool = False,
         action: object | None = None,
         hidden_url: str | None = None,
+        button_url: str | None = None,
+        preview_url: str | None = None,
     ) -> None:
         self.id = message_id
         self.video = object() if video else None
@@ -38,6 +40,14 @@ class FakeMessage:
         self.out = out
         self.action = action
         self.entities = [SimpleNamespace(url=hidden_url)] if hidden_url else []
+        self.reply_markup = (
+            SimpleNamespace(rows=[SimpleNamespace(buttons=[SimpleNamespace(url=button_url)])])
+            if button_url
+            else None
+        )
+        self.web_preview = (
+            SimpleNamespace(url=preview_url, display_url=None) if preview_url else None
+        )
 
     def get_entities_text(self) -> list[tuple[object, str]]:
         return []
@@ -200,6 +210,22 @@ def test_hidden_entity_url_is_adapted() -> None:
     assert incoming.entity_urls == ("https://youtube.com/hidden",)
 
 
+def test_button_and_preview_urls_are_adapted() -> None:
+    event = FakeEvent(
+        1,
+        101,
+        button_url="https://youtube.com/button",
+        preview_url="https://youtube.com/preview",
+    )
+
+    incoming = to_incoming_message(event, SimpleNamespace(username="name"))
+
+    assert incoming.entity_urls == (
+        "https://youtube.com/button",
+        "https://youtube.com/preview",
+    )
+
+
 @pytest.mark.asyncio
 async def test_late_parser_video_with_discarded_original_url_is_deleted(
     settings_factory: Callable[..., Settings],
@@ -230,6 +256,30 @@ async def test_late_parser_video_with_discarded_original_url_is_deleted(
 
     assert [request.message_ids for request in cleanup.requests] == [(2, 3), (20,)]
     assert metrics.get("parser_outputs_received") == 2
+    assert metrics.get("parser_outputs_matched") == 1
+
+
+@pytest.mark.asyncio
+async def test_non_bot_parser_account_with_source_hyperlink_is_deleted(
+    settings_factory: Callable[..., Settings],
+) -> None:
+    handler, _, cleanup, metrics = make_handler(settings_factory(group_size=5))
+
+    await handler(FakeEvent(1, 101, text="https://youtube.com/watch?v=1"))
+    await handler(FakeEvent(2, 101, text="https://youtube.com/watch?v=2"))
+    await handler(FakeEvent(3, 101, text="https://youtube.com/watch?v=3"))
+    await handler(
+        FakeEvent(
+            20,
+            500,
+            video=True,
+            text="Source",
+            hidden_url="https://youtube.com/watch?v=2",
+        )
+    )
+
+    assert [request.message_ids for request in cleanup.requests] == [(2, 3), (20,)]
+    assert metrics.get("parser_outputs_received") == 1
     assert metrics.get("parser_outputs_matched") == 1
 
 
