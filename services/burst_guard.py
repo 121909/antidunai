@@ -198,6 +198,20 @@ class BurstGuardService:
             self._prune_run_locked(group, run)
             return snapshot
 
+    async def close_run_for_other_user(self, chat_id: int, user_id: int) -> BurstRunSnapshot | None:
+        lock = self._lock_for(chat_id)
+        async with lock:
+            group = self._groups.get(chat_id)
+            if group is None:
+                return None
+            run = self._current_run(group)
+            if run is None or run.user_id == user_id:
+                return None
+            self._close_run_locked(group, run)
+            snapshot = self._snapshot(run)
+            self._prune_run_locked(group, run)
+            return snapshot
+
     async def record_output(
         self,
         chat_id: int,
