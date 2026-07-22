@@ -204,6 +204,7 @@ host ends with "." + configured_domain
 
 - 指定用户的 `video` 和 `video_note` 直接命中候选。
 - 指定用户的 `document.mime_type` 以 `video/` 开头时命中候选。
+- 带 `DocumentAttributeAnimated` 的 Telegram GIF 和带 `DocumentAttributeSticker` 的贴纸优先排除，即使其 MIME 为 `video/mp4` 或 `video/webm`。
 - 非目标发送者的视频媒体本身不进入目标用户窗口，但携带回复关系或原链接时可作为解析输出参与关联，不依赖发送者的 `bot` 标志。
 - 配置解析发送者没有可识别原链接且未回复源消息的视频，按发送顺序与尚未匹配的目标链接消息关联；回复消息 ID 和 `Source` 原链接的优先级更高。
 - 不根据文件名扩展名猜测 MIME 类型，也不读取或下载文件内容。

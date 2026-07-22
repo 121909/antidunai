@@ -87,6 +87,18 @@ def test_video_media_is_detected_independently_from_link_candidates(
     assert not is_video_link_candidate(media, frozenset({"youtube.com"}))
 
 
+@pytest.mark.parametrize(
+    "animated_media",
+    [
+        message(has_video=True, document_mime_type="video/mp4", is_animated=True),
+        message(document_mime_type="image/gif", is_animated=True),
+        message(document_mime_type="video/webm", is_sticker=True),
+    ],
+)
+def test_animations_and_stickers_are_not_video_media(animated_media: IncomingMessage) -> None:
+    assert not has_video_media(animated_media)
+
+
 def test_tiktok_domain_and_subdomains_are_candidates() -> None:
     domains = frozenset({"tiktok.com"})
 

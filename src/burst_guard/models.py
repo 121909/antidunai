@@ -16,6 +16,8 @@ class IncomingMessage:
     entity_urls: tuple[str, ...] = ()
     has_video: bool = False
     has_video_note: bool = False
+    is_animated: bool = False
+    is_sticker: bool = False
     document_mime_type: str | None = None
 
 

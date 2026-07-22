@@ -159,6 +159,8 @@ def candidate_url_keys(message: IncomingMessage, domains: frozenset[str]) -> fro
 
 
 def has_video_media(message: IncomingMessage) -> bool:
+    if message.is_animated or message.is_sticker:
+        return False
     return bool(
         message.has_video
         or message.has_video_note

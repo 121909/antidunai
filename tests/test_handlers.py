@@ -32,11 +32,18 @@ class FakeMessage:
         button_url: str | None = None,
         preview_url: str | None = None,
         reply_to_message_id: int | None = None,
+        gif: bool = False,
+        sticker: bool = False,
+        document_mime_type: str | None = None,
     ) -> None:
         self.id = message_id
         self.video = object() if video else None
         self.video_note = None
-        self.document = None
+        self.gif = object() if gif else None
+        self.sticker = object() if sticker else None
+        self.document = (
+            SimpleNamespace(mime_type=document_mime_type) if document_mime_type else None
+        )
         self.message = text
         self.out = out
         self.action = action
@@ -254,6 +261,18 @@ def test_reply_message_id_is_adapted() -> None:
     assert incoming.reply_to_message_id == 42
 
 
+def test_animation_and_sticker_attributes_are_adapted() -> None:
+    gif_event = FakeEvent(1, 101, video=True, gif=True, document_mime_type="video/mp4")
+    sticker_event = FakeEvent(2, 101, sticker=True, document_mime_type="video/webm")
+
+    gif = to_incoming_message(gif_event, SimpleNamespace(username="name"))
+    sticker = to_incoming_message(sticker_event, SimpleNamespace(username="name"))
+
+    assert gif.has_video is True
+    assert gif.is_animated is True
+    assert sticker.is_sticker is True
+
+
 @pytest.mark.asyncio
 async def test_late_parser_video_with_discarded_original_url_is_deleted(
     settings_factory: Callable[..., Settings],
@@ -461,3 +480,48 @@ async def test_successful_threshold_cleanup_notifies_once_but_parser_cleanup_doe
         }
     ]
     assert [request.message_ids for request in cleanup.requests] == [(2, 3), (20,)]
+
+
+@pytest.mark.asyncio
+async def test_target_gif_and_video_sticker_do_not_count_as_candidates(
+    settings_factory: Callable[..., Settings],
+) -> None:
+    handler, state, cleanup, metrics = make_handler(settings_factory(group_size=4, threshold=2))
+
+    await handler(FakeEvent(1, 101, video=True, gif=True, document_mime_type="video/mp4"))
+    await handler(FakeEvent(2, 101, sticker=True, document_mime_type="video/webm"))
+    await handler(FakeEvent(3, 101, text="https://youtube.com/watch?v=3"))
+    await handler(FakeEvent(4, 101, video=True))
+
+    window = state.chat_state(-1001).target_windows["id:101"]
+    assert [request.message_ids for request in cleanup.requests] == [(4,)]
+    assert window.candidate_message_ids == [3]
+    assert metrics.get("candidate_messages") == 2
+
+
+@pytest.mark.asyncio
+async def test_parser_gif_does_not_consume_next_link_source(
+    settings_factory: Callable[..., Settings],
+) -> None:
+    handler, _, cleanup, metrics = make_handler(
+        settings_factory(group_size=5, parser_sender_ids="7947627028")
+    )
+
+    await handler(FakeEvent(1, 101, text="https://youtube.com/watch?v=1"))
+    await handler(FakeEvent(2, 101, text="https://youtube.com/watch?v=2"))
+    await handler(FakeEvent(3, 101, text="https://youtube.com/watch?v=3"))
+    await handler(
+        FakeEvent(
+            20,
+            7947627028,
+            bot=True,
+            video=True,
+            gif=True,
+            document_mime_type="video/mp4",
+        )
+    )
+    await handler(FakeEvent(21, 7947627028, bot=True, video=True))
+    await handler(FakeEvent(22, 7947627028, bot=True, video=True))
+
+    assert [request.message_ids for request in cleanup.requests] == [(2, 3), (22,)]
+    assert metrics.get("parser_outputs_received") == 2

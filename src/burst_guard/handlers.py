@@ -61,6 +61,8 @@ def to_incoming_message(event: Any, sender: Any) -> IncomingMessage:
         entity_urls=_entity_urls(message),
         has_video=getattr(message, "video", None) is not None,
         has_video_note=getattr(message, "video_note", None) is not None,
+        is_animated=getattr(message, "gif", None) is not None,
+        is_sticker=getattr(message, "sticker", None) is not None,
         document_mime_type=getattr(document, "mime_type", None),
     )
 
