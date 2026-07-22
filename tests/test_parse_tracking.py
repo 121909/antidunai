@@ -334,16 +334,22 @@ async def test_eviction_cancels_parse_and_deletes_output_sent_during_cancellatio
         parser = SimpleNamespace(get_platform=lambda _: SimpleNamespace(id="youtube"))
 
     monkeypatch.setattr(parse, "ParseService", FakeParseService)
-    started = asyncio.Event()
-    cancellation_seen = asyncio.Event()
+    all_started = asyncio.Event()
+    started_count = 0
+    cancelled_urls: set[str] = set()
 
-    async def fake_parse_request(*_: Any, **__: Any) -> None:
-        started.set()
+    async def fake_parse_request(*_: Any, **kwargs: Any) -> None:
+        nonlocal started_count
+        url = cast(str, kwargs["url"])
+        started_count += 1
+        if started_count == 2:
+            all_started.set()
         try:
             await asyncio.Event().wait()
         except asyncio.CancelledError:
-            cancellation_seen.set()
-            await parse._track_output(SimpleNamespace(id=101))
+            cancelled_urls.add(url)
+            output_id = 101 if url.endswith("first") else 102
+            await parse._track_output(SimpleNamespace(id=output_id))
 
     monkeypatch.setattr(parse, "_handle_parse_request", fake_parse_request)
     message = cast(
@@ -354,13 +360,13 @@ async def test_eviction_cancels_parse_and_deletes_output_sent_during_cancellatio
             from_user=None,
             command=None,
             reply_to_message=None,
-            text="https://youtu.be/video",
+            text="https://youtu.be/first https://youtu.be/second",
             caption=None,
         ),
     )
     client = RecordingClient()
     handler_task = asyncio.create_task(parse.jx(as_client(client), message))
-    await started.wait()
+    await all_started.wait()
     await asyncio.sleep(0)
 
     await service.register_candidate(-100, 10, 2)
@@ -368,8 +374,8 @@ async def test_eviction_cancels_parse_and_deletes_output_sent_during_cancellatio
     await burst_plugin.cleanup_evictions(as_client(client), third.evictions)
     await handler_task
 
-    assert cancellation_seen.is_set()
+    assert cancelled_urls == {"https://youtu.be/first", "https://youtu.be/second"}
     deleted_ids = {message_id for _, message_ids in client.calls for message_id in message_ids}
-    assert {1, 3, 101} <= deleted_ids
+    assert {1, 3, 101, 102} <= deleted_ids
     after_completion = await service.record_output(-100, 1, [102])
     assert after_completion.tracked is False

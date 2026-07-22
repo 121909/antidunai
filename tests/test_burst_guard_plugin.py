@@ -36,6 +36,8 @@ def make_message(
     document_mime: str | None = None,
     sender_chat: object | None = None,
     service: object | None = None,
+    via_bot: object | None = None,
+    forward_origin: object | None = None,
 ) -> Message:
     from_user = None
     if user_id is not None:
@@ -49,6 +51,8 @@ def make_message(
             from_user=from_user,
             sender_chat=sender_chat,
             service=service,
+            via_bot=via_bot,
+            forward_origin=forward_origin,
             text=text,
             caption=caption,
             video=video,
@@ -128,6 +132,49 @@ async def test_same_target_text_and_bot_messages_do_not_break_run(monkeypatch: p
 
     run = await service.get_run(-100)
     assert run is not None and run.run_id == 1 and run.candidate_count == 1
+
+
+@pytest.mark.asyncio
+async def test_inline_result_and_forwarded_bot_output_do_not_count_or_break_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = configure(monkeypatch, (10, "target"))
+    await plugin.handle_burst_guard_message(cast(Any, None), make_message(1, video=object()))
+
+    await plugin.handle_burst_guard_message(
+        cast(Any, None),
+        make_message(2, video=object(), via_bot=SimpleNamespace(is_self=True)),
+    )
+    await plugin.handle_burst_guard_message(
+        cast(Any, None),
+        make_message(
+            3,
+            video=object(),
+            forward_origin=SimpleNamespace(sender_user=SimpleNamespace(is_bot=True)),
+        ),
+    )
+
+    run = await service.get_run(-100)
+    assert run is not None and run.run_id == 1 and run.candidate_count == 1
+
+
+@pytest.mark.asyncio
+async def test_finalizer_releases_candidate_when_parse_handler_does_not_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = configure(monkeypatch, (10, "target"))
+    monkeypatch.setattr(plugin, "_platform_id", lambda _: "youtube")
+    candidate = make_message(1, text="https://youtu.be/video")
+
+    await plugin.handle_burst_guard_message(cast(Any, None), candidate)
+    await plugin.burst_guard_finalizer(cast(Any, None), candidate)
+    await plugin.handle_burst_guard_message(
+        cast(Any, None),
+        make_message(2, user_id=99, username="member", text="interrupt"),
+    )
+
+    assert await service.get_run(-100) is None
+    assert (await service.record_output(-100, 1, [100])).tracked is False
 
 
 @pytest.mark.asyncio

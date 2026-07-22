@@ -259,6 +259,8 @@ class BurstGuardService:
         source_message_id: int,
         task: asyncio.Future[Any],
     ) -> bool:
+        if (chat_id, source_message_id) not in self._items:
+            return False
         lock = self._lock_for(chat_id)
         async with lock:
             item = self._items.get((chat_id, source_message_id))
@@ -276,6 +278,8 @@ class BurstGuardService:
         source_message_id: int,
         task: asyncio.Future[Any],
     ) -> None:
+        if (chat_id, source_message_id) not in self._items:
+            return
         lock = self._lock_for(chat_id)
         async with lock:
             item = self._items.get((chat_id, source_message_id))
@@ -285,6 +289,8 @@ class BurstGuardService:
             self._prune_item_locked(item)
 
     async def finish_processing(self, chat_id: int, source_message_id: int) -> None:
+        if (chat_id, source_message_id) not in self._items:
+            return
         lock = self._lock_for(chat_id)
         async with lock:
             item = self._items.get((chat_id, source_message_id))
@@ -294,6 +300,8 @@ class BurstGuardService:
             self._prune_item_locked(item)
 
     async def finish_cleanup(self, chat_id: int, source_message_id: int) -> None:
+        if (chat_id, source_message_id) not in self._items:
+            return
         lock = self._lock_for(chat_id)
         async with lock:
             item = self._items.get((chat_id, source_message_id))

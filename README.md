@@ -71,17 +71,20 @@
 ### 🐳 Docker 运行 (推荐)
 
 ```bash
-mkdir parse_hub_bot && cd parse_hub_bot
+git clone https://github.com/121909/antidunai.git
+cd antidunai
+git switch feature/burst-video-guard
+cp .env.exa .env
+# 编辑 .env，填写 Telegram 凭据和防刷屏配置
 
+docker build -t antidunai:burst-video-guard .
 docker run -d \
   --restart=always \
-  -e API_ID=你的API_ID \
-  -e API_HASH=你的API_HASH \
-  -e BOT_TOKEN=你的BOT_TOKEN \
+  --env-file .env \
   -v ./logs:/app/logs \
   -v ./data:/app/data \
-  --name parse-hub-bot \
-  ghcr.io/z-mio/parse_hub_bot:latest
+  --name antidunai \
+  antidunai:burst-video-guard
 ```
 
 ### 💻 源码运行
@@ -124,6 +127,16 @@ BURST_GUARD_VIDEO_PLATFORMS=douyin,bilibili,youtube
 `BURST_GUARD_TARGETS` 接受逗号分隔的 Telegram 用户 ID 或用户名，用户名匹配不区分大小写且可带 `@`。优先配置固定用户 ID，因为用户名可能变更或缺失。`BURST_GUARD_THRESHOLD` 最小为 3；平台白名单使用 ParseHub 的平台 ID。对于同时支持视频和图文的平台，首个版本仅按平台识别，建议只加入确认用于视频解析的平台。
 
 机器人重启后内存中的连续段会清空，不追溯历史消息。权限不足时无法删除源消息或解析结果，应先检查群管理员权限和日志。
+
+#### 真实群验收
+
+在启动机器人前，将测试群 ID 写入本地 `.env` 的 `BURST_GUARD_TEST_CHAT_ID`，运行只读前置检查：
+
+```bash
+uv run python -m scripts.verify_burst_guard_live
+```
+
+该命令只读取群类型、机器人管理员权限和目标用户成员状态，不发送或删除消息。检查通过后启动机器人，由目标用户按 `DEVELOPMENT_PLAN.md` 第 12 节依次执行 7 个测试群用例，并在全部通过后勾选实施项 8。验收期间不得使用生产群或真实隐私数据。
 
 ### 🌐 平台配置
 

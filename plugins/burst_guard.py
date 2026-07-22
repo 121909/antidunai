@@ -17,6 +17,7 @@ from services.parser import ParseService
 logger = logger.bind(name="BurstGuard")
 
 _HANDLER_GROUP = -100
+_FINALIZER_GROUP = 100
 _URL_PATTERN = re.compile(r"https?://[^\s<>()]+", re.IGNORECASE)
 _URL_TRAILING_PUNCTUATION = ".,;:!?]}\"'"
 _GROUP_CHAT_TYPES = frozenset({enums.ChatType.GROUP, enums.ChatType.SUPERGROUP})
@@ -123,6 +124,14 @@ async def cleanup_evictions(client: Client, cleanups: Sequence[BurstCleanup]) ->
             await burst_guard.finish_cleanup(cleanup.chat_id, cleanup.source_message_id)
 
 
+def is_parser_bot_output(message: Message) -> bool:
+    via_bot = getattr(message, "via_bot", None)
+    if via_bot is not None and via_bot.is_self:
+        return True
+    forwarded_sender = getattr(getattr(message, "forward_origin", None), "sender_user", None)
+    return bool(forwarded_sender is not None and forwarded_sender.is_bot)
+
+
 async def handle_burst_guard_message(client: Client, message: Message) -> None:
     chat = message.chat
     if not bs.burst_guard_enabled or chat is None or chat.type not in _GROUP_CHAT_TYPES:
@@ -131,7 +140,7 @@ async def handle_burst_guard_message(client: Client, message: Message) -> None:
     if chat_id is None:
         return
 
-    if getattr(message, "service", None):
+    if getattr(message, "service", None) or is_parser_bot_output(message):
         return
 
     sender = message.from_user
@@ -172,3 +181,10 @@ async def handle_burst_guard_message(client: Client, message: Message) -> None:
 @Client.on_message(filters.group, group=_HANDLER_GROUP)
 async def burst_guard_listener(client: Client, message: Message) -> None:
     await handle_burst_guard_message(client, message)
+
+
+@Client.on_message(filters.group, group=_FINALIZER_GROUP)
+async def burst_guard_finalizer(_: Client, message: Message) -> None:
+    if not bs.burst_guard_enabled or message.chat is None or message.chat.id is None or message.id is None:
+        return
+    await burst_guard.finish_processing(message.chat.id, message.id)

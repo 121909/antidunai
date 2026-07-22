@@ -38,6 +38,19 @@ async def test_third_candidate_keeps_exactly_one() -> None:
 
 
 @pytest.mark.asyncio
+async def test_configured_threshold_delays_selection_until_reached() -> None:
+    service = BurstGuardService(threshold=4, rng=FixedRandom(2))
+
+    first_three = [await service.register_candidate(-100, 10, message_id) for message_id in range(1, 4)]
+    fourth = await service.register_candidate(-100, 10, 4)
+
+    assert all(registration.evictions == () for registration in first_three)
+    assert {cleanup.source_message_id for cleanup in fourth.evictions} == {1, 2, 4}
+    run = await service.get_run(-100)
+    assert run is not None and run.current_retained_source_message_id == 3
+
+
+@pytest.mark.asyncio
 async def test_later_candidate_can_replace_retained_item() -> None:
     service = BurstGuardService(rng=FixedRandom(0, 0))
     for message_id in range(1, 4):
