@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 CsvSet = Annotated[frozenset[str], NoDecode]
@@ -62,7 +62,11 @@ class Settings(BaseSettings):
     dry_run: bool = Field(default=True, validation_alias="BURST_GUARD_DRY_RUN")
     chat_ids: CsvIntSet = Field(validation_alias="BURST_GUARD_CHAT_IDS", min_length=1)
     targets: CsvSet = Field(validation_alias="BURST_GUARD_TARGETS", min_length=1)
-    group_size: int = Field(default=10, validation_alias="BURST_GUARD_GROUP_SIZE", ge=1)
+    group_size: int = Field(
+        default=10,
+        validation_alias=AliasChoices("BURST_GUARD_WINDOW_SIZE", "BURST_GUARD_GROUP_SIZE"),
+        ge=1,
+    )
     threshold: int = Field(default=3, validation_alias="BURST_GUARD_THRESHOLD", ge=1)
     video_domains: CsvSet = Field(default=frozenset(), validation_alias="BURST_GUARD_VIDEO_DOMAINS")
     delete_batch_size: int = Field(
@@ -136,7 +140,7 @@ class Settings(BaseSettings):
             raise ValueError("the automation account must not be a target user")
         if self.group_size < self.threshold:
             raise ValueError(
-                "BURST_GUARD_GROUP_SIZE must be greater than or equal to BURST_GUARD_THRESHOLD"
+                "BURST_GUARD_WINDOW_SIZE must be greater than or equal to BURST_GUARD_THRESHOLD"
             )
         return self
 

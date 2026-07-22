@@ -98,7 +98,7 @@ def make_handler(
 
 
 @pytest.mark.asyncio
-async def test_fixed_group_link_cleanup_occurs_outside_state_lock(
+async def test_rolling_window_cleanup_occurs_outside_state_lock(
     settings_factory: Callable[..., Settings],
 ) -> None:
     handler, state, cleanup, metrics = make_handler(settings_factory(group_size=3))
@@ -111,8 +111,8 @@ async def test_fixed_group_link_cleanup_occurs_outside_state_lock(
     assert len(cleanup.requests) == 1
     assert cleanup.requests[0].message_ids == (2, 3)
     assert metrics.get("candidate_messages") == 3
-    assert metrics.get("groups_started") == 1
-    assert state.chat_state(-1001).active_run is None
+    assert metrics.get("target_windows_started") == 1
+    assert "id:101" in state.chat_state(-1001).target_windows
 
 
 @pytest.mark.asyncio
@@ -127,11 +127,11 @@ async def test_target_video_file_counts_as_candidate(
 
     assert [request.message_ids for request in cleanup.requests] == [(3,)]
     assert metrics.get("candidate_messages") == 2
-    assert state.chat_state(-1001).active_run is None
+    assert "id:101" in state.chat_state(-1001).target_windows
 
 
 @pytest.mark.asyncio
-async def test_non_target_link_counts_as_message_but_not_candidate(
+async def test_non_target_link_does_not_enter_target_window(
     settings_factory: Callable[..., Settings],
 ) -> None:
     handler, _, cleanup, metrics = make_handler(settings_factory(group_size=3, threshold=2))
@@ -145,17 +145,17 @@ async def test_non_target_link_counts_as_message_but_not_candidate(
 
 
 @pytest.mark.asyncio
-async def test_every_non_bot_message_occupies_one_group_position(
+async def test_only_target_messages_enter_target_window(
     settings_factory: Callable[..., Settings],
 ) -> None:
     handler, state, _, _ = make_handler(settings_factory(group_size=3))
 
     await handler(FakeEvent(1, 101, text="https://youtube.com/1"))
     await handler(FakeEvent(2, 101, text="ordinary"))
-    assert state.chat_state(-1001).active_run is not None
-
     await handler(FakeEvent(3, None, text="anonymous admin"))
-    assert state.chat_state(-1001).active_run is None
+
+    window = state.chat_state(-1001).target_windows["id:101"]
+    assert window.window_message_ids == [1, 2]
 
 
 @pytest.mark.asyncio
@@ -171,7 +171,7 @@ async def test_filters_disabled_wrong_chat_private_service_own_and_bot(
     await handler(FakeEvent(5, 101, bot=True, video=True))
 
     assert metrics.snapshot() == {}
-    assert state.chat_state(-1001).active_run is None
+    assert state.chat_state(-1001).target_windows == {}
 
     disabled, _, _, disabled_metrics = make_handler(settings_factory(enabled=False))
     await disabled(FakeEvent(6, 101, video=True))
@@ -250,7 +250,7 @@ async def test_parser_video_arriving_before_threshold_is_deleted_with_source(
             text="https://youtube.com/watch?v=2",
         )
     )
-    assert state.chat_state(-1001).active_run is not None
+    assert "id:101" in state.chat_state(-1001).target_windows
     await handler(FakeEvent(3, 101, text="https://youtube.com/watch?v=3"))
 
     assert [request.message_ids for request in cleanup.requests] == [(2, 3, 20)]

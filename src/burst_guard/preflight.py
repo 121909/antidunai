@@ -29,7 +29,7 @@ class PreflightSummary:
     account_id: int
     chat_count: int
     target_count: int
-    group_size: int
+    window_size: int
     threshold: int
     domain_count: int
     dry_run: bool
@@ -92,7 +92,7 @@ async def run_preflight(
         account_id=account_id,
         chat_count=len(settings.chat_ids),
         target_count=len(settings.targets),
-        group_size=settings.group_size,
+        window_size=settings.group_size,
         threshold=settings.threshold,
         domain_count=len(settings.video_domains),
         dry_run=settings.dry_run,
@@ -104,7 +104,7 @@ async def run_preflight(
         account_id=summary.account_id,
         chat_count=summary.chat_count,
         target_count=summary.target_count,
-        group_size=summary.group_size,
+        window_size=summary.window_size,
         threshold=summary.threshold,
         domain_count=summary.domain_count,
         dry_run=summary.dry_run,

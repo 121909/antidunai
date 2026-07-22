@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from burst_guard.models import BurstRun, CleanupRequest, StateResult
+from burst_guard.models import CleanupRequest, StateResult, TargetWindow
 
 
 class RandomSource(Protocol):
@@ -24,7 +24,7 @@ class DiscardedUrl:
 @dataclass(slots=True)
 class ChatState:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    active_run: BurstRun | None = None
+    target_windows: dict[str, TargetWindow] = field(default_factory=dict)
     recently_seen_message_ids: dict[int, float] = field(default_factory=dict)
     pending_parser_messages: dict[str, dict[int, float]] = field(default_factory=dict)
     discarded_url_keys: dict[str, DiscardedUrl] = field(default_factory=dict)
@@ -45,11 +45,11 @@ class BurstStateService:
     ) -> None:
         if threshold < 1:
             raise ValueError("threshold must be at least 1")
-        resolved_group_size = threshold if group_size is None else group_size
-        if resolved_group_size < threshold:
-            raise ValueError("group size must be greater than or equal to threshold")
+        resolved_window_size = threshold if group_size is None else group_size
+        if resolved_window_size < threshold:
+            raise ValueError("window size must be greater than or equal to threshold")
         self.threshold = threshold
-        self.group_size = resolved_group_size
+        self.window_size = resolved_window_size
         self.idempotency_ttl_seconds = idempotency_ttl_seconds
         self._random = random_source or random.SystemRandom()
         self._clock = clock
@@ -75,36 +75,42 @@ class BurstStateService:
             self._purge_expired(state, now)
             if self._mark_seen(state, message_id, now):
                 return StateResult(duplicate=True)
+            if target_key is None:
+                return StateResult()
 
-            run_started = False
-            if state.active_run is None:
-                state.active_run = BurstRun(
+            window_started = target_key not in state.target_windows
+            window = state.target_windows.setdefault(
+                target_key,
+                TargetWindow(
                     run_id=self._run_id_factory(),
                     chat_id=chat_id,
-                    target_key="fixed-group",
-                )
-                run_started = True
-            run = state.active_run
-            run.message_count += 1
-            if target_key is not None and is_candidate:
-                run.candidate_count += 1
-                run.warmup_message_ids.append(message_id)
-                run.warmup_url_keys[message_id] = candidate_url_keys
+                    target_key=target_key,
+                ),
+            )
+            window.window_message_ids.append(message_id)
+            if is_candidate:
+                window.candidate_message_ids.append(message_id)
+                window.candidate_url_keys[message_id] = candidate_url_keys
 
-            run_closed = run.message_count == self.group_size
-            cleanup = None
-            if run_closed:
-                cleanup = self._finish_group(state, run, now)
-                run.closed = True
-                state.active_run = None
+            self._trim_window(state, window, now)
+            message_count = len(window.window_message_ids)
+            candidate_count = len(window.candidate_message_ids)
+            cleanup, retained_message_id = self._evaluate_window(state, window, now)
+            window.message_count = len(window.window_message_ids)
+            window.candidate_count = len(window.candidate_message_ids)
+            window.retained_message_id = retained_message_id
+            window.retained_url_keys = (
+                window.candidate_url_keys.get(retained_message_id, frozenset())
+                if retained_message_id is not None
+                else frozenset()
+            )
             return StateResult(
                 cleanup=cleanup,
-                run_started=run_started,
-                run_closed=run_closed,
-                message_count=run.message_count,
-                candidate_count=run.candidate_count,
-                retained_message_id=run.retained_message_id,
-                run_id=run.run_id,
+                run_started=window_started,
+                message_count=message_count,
+                candidate_count=candidate_count,
+                retained_message_id=retained_message_id,
+                run_id=window.run_id,
             )
 
     async def process_parser_output(
@@ -122,7 +128,8 @@ class BurstStateService:
             if self._mark_seen(state, message_id, now):
                 return StateResult(duplicate=True)
 
-            protected_keys = self._active_url_keys(state) | frozenset(state.protected_url_keys)
+            active_keys = self._active_url_keys(state)
+            protected_keys = active_keys | frozenset(state.protected_url_keys)
             discarded = [
                 state.discarded_url_keys[key] for key in url_keys if key in state.discarded_url_keys
             ]
@@ -138,69 +145,80 @@ class BurstStateService:
                     run_id=run_id,
                 )
 
-            tracked_keys = url_keys & self._active_url_keys(state)
-            for url_key in tracked_keys:
+            for url_key in url_keys & active_keys:
                 state.pending_parser_messages.setdefault(url_key, {})[message_id] = now
             return StateResult()
 
-    def _finish_group(
+    def _trim_window(self, state: ChatState, window: TargetWindow, now: float) -> None:
+        while len(window.window_message_ids) > self.window_size:
+            expired_message_id = window.window_message_ids.pop(0)
+            url_keys = window.candidate_url_keys.pop(expired_message_id, None)
+            if url_keys is None:
+                continue
+            window.candidate_message_ids.remove(expired_message_id)
+            self._protect_links(state, expired_message_id, url_keys, now)
+
+    def _evaluate_window(
         self,
         state: ChatState,
-        run: BurstRun,
+        window: TargetWindow,
         now: float,
-    ) -> CleanupRequest | None:
-        candidates = list(run.warmup_message_ids)
+    ) -> tuple[CleanupRequest | None, int | None]:
+        candidates = list(window.candidate_message_ids)
         if len(candidates) < self.threshold:
-            for candidate in candidates:
-                self._protect_links(
-                    state,
-                    candidate,
-                    run.warmup_url_keys[candidate],
-                    now,
-                )
-            return None
+            return None, None
 
-        retained_index = self._random.randrange(len(candidates))
-        run.retained_message_id = candidates[retained_index]
-        run.retained_url_keys = run.warmup_url_keys[run.retained_message_id]
-        self._protect_links(
-            state,
-            run.retained_message_id,
-            run.retained_url_keys,
-            now,
-        )
-        deleted = tuple(
-            candidate for index, candidate in enumerate(candidates) if index != retained_index
-        )
+        retained_message_id = candidates[self._random.randrange(len(candidates))]
+        deleted = tuple(candidate for candidate in candidates if candidate != retained_message_id)
+        if not deleted:
+            self._protect_links(
+                state,
+                retained_message_id,
+                window.candidate_url_keys[retained_message_id],
+                now,
+            )
+            return None, retained_message_id
+
+        for candidate in deleted:
+            self._unprotect_links(
+                state,
+                candidate,
+                window.candidate_url_keys[candidate],
+            )
+        retained_url_keys = window.candidate_url_keys[retained_message_id]
+        self._protect_links(state, retained_message_id, retained_url_keys, now)
+
         parser_message_ids: set[int] = set()
         for candidate in deleted:
             parser_message_ids.update(
                 self._discard_links(
                     state,
-                    run.warmup_url_keys[candidate],
-                    run.retained_url_keys,
-                    run.run_id,
+                    window.candidate_url_keys[candidate],
+                    retained_url_keys,
+                    window.run_id,
                     now,
                 )
             )
+            window.candidate_url_keys.pop(candidate, None)
+        window.candidate_message_ids = [retained_message_id]
+
         message_ids = (*deleted, *sorted(parser_message_ids - set(deleted)))
-        if not message_ids:
-            return None
-        return CleanupRequest(
-            run.chat_id,
-            message_ids,
-            "fixed_group_threshold_reached",
-            run.run_id,
+        return (
+            CleanupRequest(
+                window.chat_id,
+                message_ids,
+                "rolling_window_threshold_reached",
+                window.run_id,
+            ),
+            retained_message_id,
         )
 
     @staticmethod
     def _active_url_keys(state: ChatState) -> frozenset[str]:
-        run = state.active_run
-        if run is None:
-            return frozenset()
-        keys = set(run.retained_url_keys)
-        for candidate_keys in run.warmup_url_keys.values():
-            keys.update(candidate_keys)
+        keys: set[str] = set()
+        for window in state.target_windows.values():
+            for candidate_keys in window.candidate_url_keys.values():
+                keys.update(candidate_keys)
         return frozenset(keys)
 
     @staticmethod
@@ -245,6 +263,20 @@ class BurstStateService:
             state.discarded_url_keys.pop(url_key, None)
 
     @staticmethod
+    def _unprotect_links(
+        state: ChatState,
+        message_id: int,
+        url_keys: frozenset[str],
+    ) -> None:
+        for url_key in url_keys:
+            protected = state.protected_url_keys.get(url_key)
+            if protected is None:
+                continue
+            protected.pop(message_id, None)
+            if not protected:
+                del state.protected_url_keys[url_key]
+
+    @staticmethod
     def _mark_seen(state: ChatState, message_id: int, now: float) -> bool:
         if message_id in state.recently_seen_message_ids:
             return True
@@ -285,7 +317,7 @@ class BurstStateService:
                 idle = now - state.last_touched >= self.idempotency_ttl_seconds
                 if (
                     idle
-                    and state.active_run is None
+                    and not state.target_windows
                     and not state.recently_seen_message_ids
                     and not state.pending_parser_messages
                     and not state.discarded_url_keys

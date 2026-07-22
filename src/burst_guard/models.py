@@ -27,7 +27,7 @@ class CleanupRequest:
 
 
 @dataclass(slots=True)
-class BurstRun:
+class TargetWindow:
     run_id: str
     chat_id: int
     target_key: str
@@ -35,9 +35,9 @@ class BurstRun:
     candidate_count: int = 0
     retained_message_id: int | None = None
     retained_url_keys: frozenset[str] = frozenset()
-    warmup_message_ids: list[int] = field(default_factory=list)
-    warmup_url_keys: dict[int, frozenset[str]] = field(default_factory=dict)
-    closed: bool = False
+    window_message_ids: list[int] = field(default_factory=list)
+    candidate_message_ids: list[int] = field(default_factory=list)
+    candidate_url_keys: dict[int, frozenset[str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

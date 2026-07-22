@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -68,7 +70,7 @@ def test_automation_account_cannot_be_target(
 def test_group_size_must_cover_threshold(
     settings_factory: Callable[..., Settings],
 ) -> None:
-    with pytest.raises(ValidationError, match="GROUP_SIZE"):
+    with pytest.raises(ValidationError, match="WINDOW_SIZE"):
         settings_factory(group_size=2, threshold=3)
 
 
@@ -79,6 +81,26 @@ def test_threshold_is_not_limited_to_three(
 
     assert settings.group_size == 2
     assert settings.threshold == 1
+
+
+@pytest.mark.parametrize("window_setting", ["BURST_GUARD_WINDOW_SIZE", "BURST_GUARD_GROUP_SIZE"])
+def test_new_and_legacy_window_environment_names_are_accepted(
+    tmp_path: Path, window_setting: str
+) -> None:
+    values: dict[str, Any] = {
+        "telegram_api_id": 1,
+        "telegram_api_hash": "hash",
+        "telegram_expected_user_id": 9001,
+        "telegram_session_path": tmp_path / "guard.session",
+        "chat_ids": "-1001",
+        "targets": "101",
+        "threshold": 2,
+        window_setting: 5,
+    }
+
+    settings = Settings(**values)
+
+    assert settings.group_size == 5
 
 
 def test_domain_normalization_removes_port_and_trailing_dot() -> None:
