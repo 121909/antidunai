@@ -38,7 +38,11 @@ async def _state_janitor(state: BurstStateService, interval: float, logger: logg
 async def run_service(settings: Settings) -> None:
     logger = configure_logging(settings.log_level)
     metrics = Metrics()
-    state = BurstStateService(settings.threshold, settings.idempotency_ttl_seconds)
+    state = BurstStateService(
+        settings.threshold,
+        settings.idempotency_ttl_seconds,
+        group_size=settings.group_size,
+    )
     client = TelegramClient(
         str(settings.telegram_session_path),
         settings.telegram_api_id,

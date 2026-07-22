@@ -79,7 +79,12 @@ class FakeCleanup:
 def make_handler(
     settings: Settings,
 ) -> tuple[TelegramUpdateHandler, BurstStateService, FakeCleanup, Metrics]:
-    state = BurstStateService(3, 60, random_source=ZeroRandom())
+    state = BurstStateService(
+        settings.threshold,
+        60,
+        group_size=settings.group_size,
+        random_source=ZeroRandom(),
+    )
     cleanup = FakeCleanup(state)
     metrics = Metrics()
     handler = TelegramUpdateHandler(
@@ -93,30 +98,58 @@ def make_handler(
 
 
 @pytest.mark.asyncio
-async def test_target_burst_cleanup_occurs_outside_state_lock(
+async def test_fixed_group_link_cleanup_occurs_outside_state_lock(
     settings_factory: Callable[..., Settings],
 ) -> None:
-    handler, state, cleanup, metrics = make_handler(settings_factory())
+    handler, state, cleanup, metrics = make_handler(settings_factory(group_size=3))
 
-    await handler(FakeEvent(1, 101, video=True))
-    await handler(FakeEvent(2, 101, video=True))
+    await handler(FakeEvent(1, 101, text="https://youtube.com/1"))
+    await handler(FakeEvent(2, 101, text="https://youtube.com/2"))
     await handler(FakeEvent(9, 999, video=True, bot=True))
-    await handler(FakeEvent(3, 101, video=True))
+    await handler(FakeEvent(3, 101, text="https://youtube.com/3"))
 
     assert len(cleanup.requests) == 1
     assert cleanup.requests[0].message_ids == (2, 3)
     assert metrics.get("candidate_messages") == 3
-    assert metrics.get("bursts_started") == 1
-    assert state.chat_state(-1001).active_run is not None
+    assert metrics.get("groups_started") == 1
+    assert state.chat_state(-1001).active_run is None
 
 
 @pytest.mark.asyncio
-async def test_same_target_text_does_not_break_but_anonymous_sender_does(
+async def test_target_video_file_counts_as_message_but_not_link_candidate(
     settings_factory: Callable[..., Settings],
 ) -> None:
-    handler, state, _, _ = make_handler(settings_factory())
+    handler, state, cleanup, metrics = make_handler(settings_factory(group_size=2, threshold=1))
 
     await handler(FakeEvent(1, 101, video=True))
+    await handler(FakeEvent(2, 999, text="ordinary"))
+
+    assert cleanup.requests == []
+    assert metrics.get("candidate_messages") == 0
+    assert state.chat_state(-1001).active_run is None
+
+
+@pytest.mark.asyncio
+async def test_non_target_link_counts_as_message_but_not_candidate(
+    settings_factory: Callable[..., Settings],
+) -> None:
+    handler, _, cleanup, metrics = make_handler(settings_factory(group_size=3, threshold=2))
+
+    await handler(FakeEvent(1, 101, text="https://youtube.com/1"))
+    await handler(FakeEvent(2, 999, text="https://youtube.com/not-target"))
+    await handler(FakeEvent(3, 101, text="https://youtube.com/3"))
+
+    assert [request.message_ids for request in cleanup.requests] == [(3,)]
+    assert metrics.get("candidate_messages") == 2
+
+
+@pytest.mark.asyncio
+async def test_every_non_bot_message_occupies_one_group_position(
+    settings_factory: Callable[..., Settings],
+) -> None:
+    handler, state, _, _ = make_handler(settings_factory(group_size=3))
+
+    await handler(FakeEvent(1, 101, text="https://youtube.com/1"))
     await handler(FakeEvent(2, 101, text="ordinary"))
     assert state.chat_state(-1001).active_run is not None
 
@@ -149,7 +182,7 @@ async def test_duplicate_update_is_not_counted_twice(
     settings_factory: Callable[..., Settings],
 ) -> None:
     handler, _, _, metrics = make_handler(settings_factory())
-    event = FakeEvent(1, 101, video=True)
+    event = FakeEvent(1, 101, text="https://youtube.com/1")
 
     await handler(event)
     await handler(event)
@@ -170,7 +203,7 @@ def test_hidden_entity_url_is_adapted() -> None:
 async def test_late_parser_video_with_discarded_original_url_is_deleted(
     settings_factory: Callable[..., Settings],
 ) -> None:
-    handler, _, cleanup, metrics = make_handler(settings_factory())
+    handler, _, cleanup, metrics = make_handler(settings_factory(group_size=3))
 
     await handler(FakeEvent(1, 101, text="https://youtube.com/watch?v=1"))
     await handler(FakeEvent(2, 101, text="https://youtube.com/watch?v=2"))
@@ -203,7 +236,7 @@ async def test_late_parser_video_with_discarded_original_url_is_deleted(
 async def test_parser_video_arriving_before_threshold_is_deleted_with_source(
     settings_factory: Callable[..., Settings],
 ) -> None:
-    handler, state, cleanup, _ = make_handler(settings_factory())
+    handler, state, cleanup, _ = make_handler(settings_factory(group_size=3))
 
     await handler(FakeEvent(1, 101, text="https://youtube.com/watch?v=1"))
     await handler(FakeEvent(2, 101, text="https://youtube.com/watch?v=2"))
@@ -226,7 +259,7 @@ async def test_parser_video_arriving_before_threshold_is_deleted_with_source(
 async def test_bot_text_without_video_is_not_deleted(
     settings_factory: Callable[..., Settings],
 ) -> None:
-    handler, _, cleanup, metrics = make_handler(settings_factory())
+    handler, _, cleanup, metrics = make_handler(settings_factory(group_size=3))
     await handler(FakeEvent(1, 101, text="https://youtube.com/watch?v=1"))
     await handler(FakeEvent(2, 101, text="https://youtube.com/watch?v=2"))
     await handler(FakeEvent(3, 101, text="https://youtube.com/watch?v=3"))

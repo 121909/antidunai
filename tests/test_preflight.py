@@ -79,6 +79,8 @@ async def test_preflight_checks_account_and_every_chat(
 
     assert summary.account_id == 9001
     assert summary.chat_count == 2
+    assert summary.group_size == 10
+    assert summary.threshold == 3
     assert set(client.requested_chats) == {-1001, -1002}
 
 

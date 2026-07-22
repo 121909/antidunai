@@ -19,6 +19,7 @@ def test_csv_values_are_normalized(settings_factory: Callable[..., Settings]) ->
     assert settings.target_user_ids == frozenset({101})
     assert settings.target_usernames == frozenset({"video_user"})
     assert settings.video_domains == frozenset({"youtube.com", "xn--fsqu00a.xn--0zwm56d"})
+    assert settings.group_size == 10
     assert settings.threshold == 3
     assert settings.enabled is True
     assert settings.dry_run is True
@@ -39,7 +40,8 @@ def test_target_matching_prefers_stable_user_id(
     ("field", "value"),
     [
         ("telegram_api_id", 0),
-        ("threshold", 2),
+        ("threshold", 0),
+        ("group_size", 0),
         ("delete_batch_size", 0),
         ("delete_batch_size", 101),
         ("chat_ids", ""),
@@ -61,6 +63,22 @@ def test_automation_account_cannot_be_target(
 ) -> None:
     with pytest.raises(ValidationError, match="automation account"):
         settings_factory(targets="9001")
+
+
+def test_group_size_must_cover_threshold(
+    settings_factory: Callable[..., Settings],
+) -> None:
+    with pytest.raises(ValidationError, match="GROUP_SIZE"):
+        settings_factory(group_size=2, threshold=3)
+
+
+def test_threshold_is_not_limited_to_three(
+    settings_factory: Callable[..., Settings],
+) -> None:
+    settings = settings_factory(group_size=2, threshold=1)
+
+    assert settings.group_size == 2
+    assert settings.threshold == 1
 
 
 def test_domain_normalization_removes_port_and_trailing_dot() -> None:

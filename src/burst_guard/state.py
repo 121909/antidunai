@@ -38,13 +38,18 @@ class BurstStateService:
         threshold: int,
         idempotency_ttl_seconds: int,
         *,
+        group_size: int | None = None,
         random_source: RandomSource | None = None,
         clock: Callable[[], float] = time.monotonic,
         run_id_factory: Callable[[], str] = lambda: uuid.uuid4().hex,
     ) -> None:
-        if threshold < 3:
-            raise ValueError("threshold must be at least 3")
+        if threshold < 1:
+            raise ValueError("threshold must be at least 1")
+        resolved_group_size = threshold if group_size is None else group_size
+        if resolved_group_size < threshold:
+            raise ValueError("group size must be greater than or equal to threshold")
         self.threshold = threshold
+        self.group_size = resolved_group_size
         self.idempotency_ttl_seconds = idempotency_ttl_seconds
         self._random = random_source or random.SystemRandom()
         self._clock = clock
@@ -71,33 +76,32 @@ class BurstStateService:
             if self._mark_seen(state, message_id, now):
                 return StateResult(duplicate=True)
 
-            run_closed = False
-            if target_key is None:
-                run_closed = self._close_active(state, now)
-                return StateResult(run_closed=run_closed)
-
-            if state.active_run is not None and state.active_run.target_key != target_key:
-                run_closed = self._close_active(state, now)
-
-            if not is_candidate:
-                return StateResult(run_closed=run_closed)
-
-            for url_key in candidate_url_keys:
-                state.discarded_url_keys.pop(url_key, None)
-
             run_started = False
             if state.active_run is None:
                 state.active_run = BurstRun(
-                    run_id=self._run_id_factory(), chat_id=chat_id, target_key=target_key
+                    run_id=self._run_id_factory(),
+                    chat_id=chat_id,
+                    target_key="fixed-group",
                 )
                 run_started = True
             run = state.active_run
-            run.candidate_count += 1
-            cleanup = self._register_candidate(state, run, message_id, candidate_url_keys, now)
+            run.message_count += 1
+            if target_key is not None and is_candidate:
+                run.candidate_count += 1
+                run.warmup_message_ids.append(message_id)
+                run.warmup_url_keys[message_id] = candidate_url_keys
+
+            run_closed = run.message_count == self.group_size
+            cleanup = None
+            if run_closed:
+                cleanup = self._finish_group(state, run, now)
+                run.closed = True
+                state.active_run = None
             return StateResult(
                 cleanup=cleanup,
                 run_started=run_started,
                 run_closed=run_closed,
+                message_count=run.message_count,
                 candidate_count=run.candidate_count,
                 retained_message_id=run.retained_message_id,
                 run_id=run.run_id,
@@ -139,74 +143,55 @@ class BurstStateService:
                 state.pending_parser_messages.setdefault(url_key, {})[message_id] = now
             return StateResult()
 
-    def _register_candidate(
+    def _finish_group(
         self,
         state: ChatState,
         run: BurstRun,
-        message_id: int,
-        url_keys: frozenset[str],
         now: float,
     ) -> CleanupRequest | None:
-        count = run.candidate_count
-        if count < self.threshold:
-            run.warmup_message_ids.append(message_id)
-            run.warmup_url_keys[message_id] = url_keys
+        candidates = list(run.warmup_message_ids)
+        if len(candidates) < self.threshold:
+            for candidate in candidates:
+                self._protect_links(
+                    state,
+                    candidate,
+                    run.warmup_url_keys[candidate],
+                    now,
+                )
             return None
 
-        if count == self.threshold:
-            candidates = [*run.warmup_message_ids, message_id]
-            urls_by_message = {**run.warmup_url_keys, message_id: url_keys}
-            retained_index = self._random.randrange(count)
-            run.retained_message_id = candidates[retained_index]
-            run.retained_url_keys = urls_by_message[run.retained_message_id]
-            self._protect_links(
-                state,
-                run.retained_message_id,
-                run.retained_url_keys,
-                now,
-            )
-            run.warmup_message_ids.clear()
-            run.warmup_url_keys.clear()
-            deleted = tuple(
-                candidate for index, candidate in enumerate(candidates) if index != retained_index
-            )
-            parser_message_ids: set[int] = set()
-            for candidate in deleted:
-                parser_message_ids.update(
-                    self._discard_links(
-                        state,
-                        urls_by_message[candidate],
-                        run.retained_url_keys,
-                        run.run_id,
-                        now,
-                    )
-                )
-            message_ids = (*deleted, *sorted(parser_message_ids - set(deleted)))
-            return CleanupRequest(run.chat_id, message_ids, "threshold_reached", run.run_id)
-
-        if run.retained_message_id is None:
-            raise RuntimeError("active run lost its retained message")
-        if self._random.randrange(count) == 0:
-            deleted = (run.retained_message_id,)
-            deleted_url_keys = run.retained_url_keys
-            self._unprotect_links(state, run.retained_message_id, deleted_url_keys)
-            run.retained_message_id = message_id
-            run.retained_url_keys = url_keys
-            self._protect_links(state, message_id, url_keys, now)
-            reason = "reservoir_replaced"
-        else:
-            deleted = (message_id,)
-            deleted_url_keys = url_keys
-            reason = "reservoir_rejected"
-        parser_message_ids = self._discard_links(
+        retained_index = self._random.randrange(len(candidates))
+        run.retained_message_id = candidates[retained_index]
+        run.retained_url_keys = run.warmup_url_keys[run.retained_message_id]
+        self._protect_links(
             state,
-            deleted_url_keys,
+            run.retained_message_id,
             run.retained_url_keys,
-            run.run_id,
             now,
         )
+        deleted = tuple(
+            candidate for index, candidate in enumerate(candidates) if index != retained_index
+        )
+        parser_message_ids: set[int] = set()
+        for candidate in deleted:
+            parser_message_ids.update(
+                self._discard_links(
+                    state,
+                    run.warmup_url_keys[candidate],
+                    run.retained_url_keys,
+                    run.run_id,
+                    now,
+                )
+            )
         message_ids = (*deleted, *sorted(parser_message_ids - set(deleted)))
-        return CleanupRequest(run.chat_id, message_ids, reason, run.run_id)
+        if not message_ids:
+            return None
+        return CleanupRequest(
+            run.chat_id,
+            message_ids,
+            "fixed_group_threshold_reached",
+            run.run_id,
+        )
 
     @staticmethod
     def _active_url_keys(state: ChatState) -> frozenset[str]:
@@ -258,27 +243,6 @@ class BurstStateService:
         for url_key in url_keys:
             state.protected_url_keys.setdefault(url_key, {})[message_id] = now
             state.discarded_url_keys.pop(url_key, None)
-
-    @staticmethod
-    def _unprotect_links(state: ChatState, message_id: int, url_keys: frozenset[str]) -> None:
-        for url_key in url_keys:
-            protected = state.protected_url_keys.get(url_key)
-            if protected is None:
-                continue
-            protected.pop(message_id, None)
-            if not protected:
-                del state.protected_url_keys[url_key]
-
-    def _close_active(self, state: ChatState, now: float) -> bool:
-        if state.active_run is None:
-            return False
-        run = state.active_run
-        if run.candidate_count < self.threshold:
-            for message_id, url_keys in run.warmup_url_keys.items():
-                self._protect_links(state, message_id, url_keys, now)
-        run.closed = True
-        state.active_run = None
-        return True
 
     @staticmethod
     def _mark_seen(state: ChatState, message_id: int, now: float) -> bool:

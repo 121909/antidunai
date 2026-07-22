@@ -31,6 +31,7 @@ class BurstRun:
     run_id: str
     chat_id: int
     target_key: str
+    message_count: int = 0
     candidate_count: int = 0
     retained_message_id: int | None = None
     retained_url_keys: frozenset[str] = frozenset()
@@ -45,6 +46,7 @@ class StateResult:
     duplicate: bool = False
     run_started: bool = False
     run_closed: bool = False
+    message_count: int = 0
     candidate_count: int = 0
     retained_message_id: int | None = None
     run_id: str | None = None

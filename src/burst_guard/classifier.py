@@ -81,5 +81,5 @@ def has_video_media(message: IncomingMessage) -> bool:
     )
 
 
-def is_video_candidate(message: IncomingMessage, domains: frozenset[str]) -> bool:
-    return has_video_media(message) or bool(candidate_url_keys(message, domains))
+def is_video_link_candidate(message: IncomingMessage, domains: frozenset[str]) -> bool:
+    return bool(candidate_url_keys(message, domains))

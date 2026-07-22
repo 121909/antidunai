@@ -62,7 +62,8 @@ class Settings(BaseSettings):
     dry_run: bool = Field(default=True, validation_alias="BURST_GUARD_DRY_RUN")
     chat_ids: CsvIntSet = Field(validation_alias="BURST_GUARD_CHAT_IDS", min_length=1)
     targets: CsvSet = Field(validation_alias="BURST_GUARD_TARGETS", min_length=1)
-    threshold: int = Field(default=3, validation_alias="BURST_GUARD_THRESHOLD", ge=3)
+    group_size: int = Field(default=10, validation_alias="BURST_GUARD_GROUP_SIZE", ge=1)
+    threshold: int = Field(default=3, validation_alias="BURST_GUARD_THRESHOLD", ge=1)
     video_domains: CsvSet = Field(default=frozenset(), validation_alias="BURST_GUARD_VIDEO_DOMAINS")
     delete_batch_size: int = Field(
         default=100,
@@ -130,9 +131,13 @@ class Settings(BaseSettings):
         return value.expanduser().resolve()
 
     @model_validator(mode="after")
-    def account_must_not_be_target(self) -> Settings:
+    def validate_cross_field_rules(self) -> Settings:
         if self.telegram_expected_user_id in self.target_user_ids:
             raise ValueError("the automation account must not be a target user")
+        if self.group_size < self.threshold:
+            raise ValueError(
+                "BURST_GUARD_GROUP_SIZE must be greater than or equal to BURST_GUARD_THRESHOLD"
+            )
         return self
 
     @property

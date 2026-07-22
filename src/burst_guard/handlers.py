@@ -86,7 +86,7 @@ class TelegramUpdateHandler:
 
         target_key = self._settings.target_key(incoming.sender_id, incoming.sender_username)
         url_keys = candidate_url_keys(incoming, self._settings.video_domains)
-        candidate = bool(target_key and (url_keys or has_video_media(incoming)))
+        candidate = bool(target_key and url_keys)
         result = await self._state.process(
             chat_id=incoming.chat_id,
             message_id=incoming.message_id,
@@ -100,7 +100,7 @@ class TelegramUpdateHandler:
         if candidate:
             self._metrics.increment("candidate_messages")
         if result.run_started:
-            self._metrics.increment("bursts_started")
+            self._metrics.increment("groups_started")
 
         log_event(
             self._logger,
@@ -110,6 +110,7 @@ class TelegramUpdateHandler:
             run_id=result.run_id,
             sender_id=incoming.sender_id,
             message_id=incoming.message_id,
+            message_count=result.message_count or None,
             candidate_count=result.candidate_count or None,
             retained_message_id=result.retained_message_id,
             candidate=candidate,

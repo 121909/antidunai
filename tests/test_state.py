@@ -51,44 +51,74 @@ async def test_threshold_keeps_exactly_one_candidate() -> None:
     assert third.cleanup.message_ids == (1, 3)
     assert random.stops == [3]
     state = service.chat_state(-1)
-    assert state.active_run is not None
-    assert state.active_run.warmup_message_ids == []
+    assert state.active_run is None
+    assert third.run_closed
+    assert third.message_count == 3
 
 
 @pytest.mark.asyncio
-async def test_reservoir_rejects_or_replaces_new_candidates() -> None:
-    random = FixedRandom([0, 3, 0])
-    service = BurstStateService(3, 60, random_source=random)
-    await send(service, 1)
-    await send(service, 2)
-    third = await send(service, 3)
-    fourth = await send(service, 4)
-    fifth = await send(service, 5)
+async def test_group_waits_for_x_messages_and_selects_from_all_candidates() -> None:
+    random = FixedRandom([1])
+    service = BurstStateService(2, 60, group_size=5, random_source=random)
 
-    assert third.retained_message_id == 1
-    assert fourth.cleanup is not None and fourth.cleanup.message_ids == (4,)
-    assert fourth.retained_message_id == 1
-    assert fifth.cleanup is not None and fifth.cleanup.message_ids == (1,)
-    assert fifth.retained_message_id == 5
-    assert random.stops == [3, 4, 5]
+    await send(service, 1, urls=frozenset({"youtube.com/1"}))
+    threshold_reached = await send(service, 2, urls=frozenset({"youtube.com/2"}))
+    await send(service, 3, target=None, candidate=False)
+    await send(service, 4, urls=frozenset({"youtube.com/4"}))
+    group_end = await send(service, 5, target=None, candidate=False)
+
+    assert threshold_reached.cleanup is None
+    assert not threshold_reached.run_closed
+    assert group_end.cleanup is not None
+    assert group_end.cleanup.message_ids == (1, 4)
+    assert group_end.retained_message_id == 2
+    assert random.stops == [3]
 
 
 @pytest.mark.asyncio
-async def test_interruption_and_target_switch_rules() -> None:
-    service = BurstStateService(3, 60, random_source=FixedRandom([]))
-    await send(service, 1)
+async def test_group_below_y_keeps_every_candidate() -> None:
+    service = BurstStateService(3, 60, group_size=4, random_source=FixedRandom([]))
 
+    await send(service, 1, urls=frozenset({"youtube.com/1"}))
+    await send(service, 2, target=None, candidate=False)
+    await send(service, 3, urls=frozenset({"youtube.com/3"}))
+    group_end = await send(service, 4, target=None, candidate=False)
+
+    assert group_end.run_closed
+    assert group_end.candidate_count == 2
+    assert group_end.cleanup is None
+
+
+@pytest.mark.asyncio
+async def test_y_may_be_one() -> None:
+    service = BurstStateService(1, 60, group_size=3, random_source=FixedRandom([1]))
+
+    await send(service, 1, urls=frozenset({"youtube.com/1"}))
+    await send(service, 2, urls=frozenset({"youtube.com/2"}))
+    group_end = await send(service, 3, target=None, candidate=False)
+
+    assert group_end.cleanup is not None
+    assert group_end.cleanup.message_ids == (1,)
+    assert group_end.retained_message_id == 2
+
+
+@pytest.mark.asyncio
+async def test_target_switch_and_other_humans_do_not_reset_fixed_group() -> None:
+    service = BurstStateService(2, 60, group_size=4, random_source=FixedRandom([0]))
+    await send(service, 1, urls=frozenset({"youtube.com/1"}))
     same_target_text = await send(service, 2, candidate=False)
+    other_target = await send(
+        service,
+        3,
+        target="id:20",
+        urls=frozenset({"youtube.com/3"}),
+    )
+    human = await send(service, 4, target=None, candidate=False)
+
     assert not same_target_text.run_closed
-    assert service.chat_state(-1).active_run is not None
-
-    other_target_text = await send(service, 3, target="id:20", candidate=False)
-    assert other_target_text.run_closed
-    assert service.chat_state(-1).active_run is None
-
-    await send(service, 4)
-    human = await send(service, 5, target=None, candidate=False)
+    assert not other_target.run_closed
     assert human.run_closed
+    assert human.cleanup is not None and human.cleanup.message_ids == (3,)
     assert service.chat_state(-1).active_run is None
 
 
@@ -113,7 +143,7 @@ async def test_seen_ids_expire_and_idle_state_is_removed() -> None:
     def clock() -> float:
         return now
 
-    service = BurstStateService(3, 10, random_source=FixedRandom([]), clock=clock)
+    service = BurstStateService(1, 10, group_size=1, random_source=FixedRandom([]), clock=clock)
     await send(service, 1, target=None, candidate=False)
     assert (await send(service, 1, target=None, candidate=False)).duplicate
 
@@ -148,7 +178,7 @@ async def test_parser_outputs_before_and_after_eviction_are_deleted() -> None:
     assert late_discarded.cleanup is not None
     assert late_discarded.cleanup.message_ids == (103,)
     assert late_retained.cleanup is None
-    assert service.chat_state(-1).active_run is not None
+    assert service.chat_state(-1).active_run is None
 
 
 @pytest.mark.asyncio
@@ -203,15 +233,21 @@ async def test_parser_message_with_retained_and_discarded_links_is_protected() -
 
 
 @pytest.mark.asyncio
-async def test_replaced_retained_link_loses_protection() -> None:
-    service = BurstStateService(3, 60, random_source=FixedRandom([0, 0]))
+async def test_previous_group_retained_link_protects_ambiguous_output() -> None:
+    service = BurstStateService(3, 60, random_source=FixedRandom([0, 1]))
     link_a = frozenset({"youtube.com/watch?v=a"})
     await send(service, 1, urls=link_a)
     await service.process_parser_output(chat_id=-1, message_id=101, url_keys=link_a)
     await send(service, 2, urls=frozenset({"youtube.com/watch?v=b"}))
     await send(service, 3, urls=frozenset({"youtube.com/watch?v=c"}))
 
-    replacement = await send(service, 4, urls=frozenset({"youtube.com/watch?v=d"}))
+    await send(service, 4, urls=link_a)
+    await send(service, 5, urls=frozenset({"youtube.com/watch?v=d"}))
+    second_group = await send(service, 6, urls=frozenset({"youtube.com/watch?v=e"}))
+    ambiguous_output = await service.process_parser_output(
+        chat_id=-1, message_id=102, url_keys=link_a
+    )
 
-    assert replacement.cleanup is not None
-    assert replacement.cleanup.message_ids == (1, 101)
+    assert second_group.cleanup is not None
+    assert second_group.cleanup.message_ids == (4, 6)
+    assert ambiguous_output.cleanup is None

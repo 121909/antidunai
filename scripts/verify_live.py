@@ -42,7 +42,11 @@ async def verify(args: argparse.Namespace, settings: Settings) -> int:
         settings.telegram_api_id,
         settings.telegram_api_hash.get_secret_value(),
     )
-    state = BurstStateService(settings.threshold, settings.idempotency_ttl_seconds)
+    state = BurstStateService(
+        settings.threshold,
+        settings.idempotency_ttl_seconds,
+        group_size=settings.group_size,
+    )
     cleanup = CleanupService(
         TelegramDeleteAdapter(client),
         batch_size=settings.delete_batch_size,
