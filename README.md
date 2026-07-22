@@ -168,6 +168,51 @@ platforms:
       - "cookie_string_2"
 ```
 
+Cookie 必须写在 `data/config/platform_config.yaml`，不是 `.env`。可以先复制仓库里的 `platform_config.example.yaml`：
+
+```bash
+mkdir -p data/config
+cp platform_config.example.yaml data/config/platform_config.yaml
+```
+
+格式是浏览器开发者工具 Network 请求中的 `Cookie` 请求头内容：`name=value; name2=value2`。也支持 JSON 对象字符串。不要直接粘贴 Netscape 格式的 cookies.txt；请从浏览器复制 Cookie 请求头，或先转换成下面的格式。
+
+```yaml
+platforms:
+  twitter:
+    cookies:
+      - 'auth_token=YOUR_VALUE; ct0=YOUR_VALUE'
+  instagram:
+    cookies:
+      - 'sessionid=YOUR_VALUE; ds_user_id=YOUR_VALUE; csrftoken=YOUR_VALUE'
+  threads:
+    cookies:
+      - 'sessionid=YOUR_VALUE; csrftoken=YOUR_VALUE'
+  youtube:
+    cookies:
+      - 'LOGIN_INFO=YOUR_VALUE; SID=YOUR_VALUE; HSID=YOUR_VALUE; SSID=YOUR_VALUE; SAPISID=YOUR_VALUE'
+  bilibili:
+    cookies:
+      - 'SESSDATA=YOUR_VALUE; bili_jct=YOUR_VALUE; DedeUserID=YOUR_VALUE'
+  douyin:
+    cookies:
+      - 'sessionid=YOUR_VALUE; sessionid_ss=YOUR_VALUE; ttwid=YOUR_VALUE'
+  tiktok:
+    cookies:
+      - 'sessionid=YOUR_VALUE; sid_tt=YOUR_VALUE; tt_chain_token=YOUR_VALUE'
+  kuaishou:
+    cookies:
+      - 'kuaishou.live.b1=YOUR_VALUE; userId=YOUR_VALUE'
+  xhs:
+    cookies:
+      - 'a1=YOUR_VALUE; webId=YOUR_VALUE; web_session=YOUR_VALUE; xsecappid=YOUR_VALUE'
+  zhihu:
+    cookies:
+      - 'z_c0=YOUR_VALUE; _xsrf=YOUR_VALUE'
+```
+
+平台 ID 必须使用 `twitter`、`instagram`、`threads`、`youtube`、`bilibili`、`douyin`、`tiktok`、`kuaishou`、`xhs`、`zhihu` 等内部 ID。Cookie 是敏感凭据，不要提交到 Git、发到群聊或写入公开日志；失效后替换对应列表项并重启容器。
+
 ### 🔀 代理优先级
 
 解析代理和下载代理各自遵循相同的优先级逻辑：

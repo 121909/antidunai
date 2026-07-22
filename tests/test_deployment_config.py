@@ -14,7 +14,31 @@ def test_compose_builds_the_antidunai_worktree() -> None:
     assert bot["image"] == "antidunai:burst-video-guard"
     assert bot["build"] == {"context": ".", "dockerfile": "Dockerfile"}
     assert bot["env_file"] == [".env"]
+    assert bot["volumes"] == ["./data:/app/data", "./logs:/app/logs"]
     assert "z-mio/parse_hub_bot" not in compose_path.read_text(encoding="utf-8")
+
+
+def test_cookie_example_uses_supported_platform_ids_and_placeholders() -> None:
+    example = yaml.safe_load((ROOT / "platform_config.example.yaml").read_text(encoding="utf-8"))
+    expected_platforms = {
+        "twitter",
+        "instagram",
+        "threads",
+        "youtube",
+        "bilibili",
+        "douyin",
+        "tiktok",
+        "kuaishou",
+        "xhs",
+        "zhihu",
+    }
+
+    assert set(example["platforms"]) == expected_platforms
+    assert all(
+        "YOUR_VALUE" in cookie
+        for platform in example["platforms"].values()
+        for cookie in platform["cookies"]
+    )
 
 
 def test_documented_runtime_does_not_pull_the_upstream_bot_image() -> None:
