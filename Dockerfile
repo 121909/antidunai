@@ -1,42 +1,28 @@
-FROM python:3.12-slim AS build
+# syntax=docker/dockerfile:1
+FROM ghcr.io/astral-sh/uv:0.8.3 AS uv
 
-COPY --from=ghcr.io/astral-sh/uv:0.10.11 /uv /uvx /bin/
+FROM python:3.12.11-slim-bookworm AS runtime
 
-WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    PATH="/app/.venv/bin:$PATH"
 
-ENV UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy
+COPY --from=uv /uv /usr/local/bin/uv
 
-COPY pyproject.toml uv.lock ./
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        gcc python3-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --no-install-project --frozen
-
-COPY . .
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen
-
-FROM python:3.12-slim AS runtime
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        libglib2.0-0 \
-        libjemalloc2 \
-        ffmpeg \
-        media-types \
-        curl unzip ca-certificates \
-    && curl -fsSL https://deno.land/install.sh | sh \
-    && rm -rf /var/lib/apt/lists/*
-
-ENV DENO_INSTALL="/root/.deno"
-ENV PATH="/app/.venv/bin:$DENO_INSTALL/bin:$PATH"
-ENV LD_PRELOAD=libjemalloc.so.2
+RUN groupadd --gid 10001 burst-guard \
+    && useradd --uid 10001 --gid burst-guard --home-dir /app --create-home burst-guard
 
 WORKDIR /app
-COPY --from=build /app /app
+COPY pyproject.toml uv.lock README.md ./
+COPY src ./src
+RUN uv sync --frozen --no-dev --no-editable \
+    && mkdir -p /app/data \
+    && chown -R burst-guard:burst-guard /app
 
+USER 10001:10001
+EXPOSE 8080
+VOLUME ["/app/data"]
 
-CMD ["python", "bot.py"]
+ENTRYPOINT ["python", "-m", "burst_guard"]

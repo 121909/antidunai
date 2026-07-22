@@ -1,5 +1,12 @@
+.git
+.github
 .env
 .venv
+**/__pycache__
+**/*.pyc
+*.session*
 data
-downloads
-logs
+tests
+.pytest_cache
+.mypy_cache
+.ruff_cache

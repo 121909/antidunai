@@ -1,366 +1,104 @@
-<div align="center">
+# burst-guard
 
-# 🔗 ParseHubBot
+`burst-guard` 是一个独立运行的 Telegram userbot。指定用户在同一连续发言段中发送至少 3 条视频候选消息时，它使用蓄水池抽样随机保留 1 条，并删除其余消息。它不下载媒体、不读取链接页面，也不扫描历史消息。
 
-**Telegram 多平台聚合解析机器人**
+首个版本只支持单实例运行，并且必须使用专门注册的 Telegram 用户账号。不要使用个人日常账号；userbot 的使用还必须符合 Telegram 平台规则和适用法律。
 
-<p align="center">
-  <a href="https://github.com/z-mio/Parse_Hub_Bot/blob/main/LICENSE">
-    <img src="https://img.shields.io/github/license/z-mio/Parse_Hub_Bot?style=flat-square&color=5D6D7E" alt="License">
-  </a>
-  <a href="https://www.python.org/">
-    <img src="https://img.shields.io/badge/Python-3.12+-blue?style=flat-square&logo=python&logoColor=white" alt="Python">
-  </a>
-  <a href="https://t.me/ParseHubot">
-    <img src="https://img.shields.io/badge/Telegram-Bot-2CA5E0?style=flat-square&logo=telegram&logoColor=white" alt="Telegram Bot">
-  </a>
-  <a href="https://github.com/astral-sh/uv">
-    <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json&style=flat-square" alt="uv">
-  </a>
-</p>
+## 行为
 
-简体中文 |
-[English](README.en.md)
+- `video`、`video_note`、MIME 为 `video/*` 的文档，以及匹配配置域名的 URL 都是候选消息。
+- 同一目标用户的普通文本不会打断连续段。
+- 其他真人、另一目标用户、匿名管理员或频道身份发言会结束当前连续段。
+- 机器人和 Telegram 服务消息被忽略，不会打断连续段。
+- 第 1、2 条候选不会被删除；第 3 条到达后保留 1 条。后续候选以 `1/n` 概率替换当前保留项。
+- 不同群组的状态完全隔离，进程重启后不恢复状态。
 
-[**🤖 实例演示**](https://t.me/ParseHubot) ·
-[**📚 相关项目**](https://github.com/z-mio/ParseHub) ·
-[**🐛 问题反馈**](https://github.com/z-mio/Parse_Hub_Bot/issues)
+## 准备账号
 
-</div>
+1. 在 <https://my.telegram.org> 创建应用并取得 API ID 和 API Hash。
+2. 准备一个启用两步验证的专用 Telegram 用户账号。
+3. 将专用账号加入每个受管群，并授予管理员和删除消息权限。
+4. 复制配置模板：`cp .env.example .env`，填写凭据、专用账号数字 ID、群组 ID 和目标用户。
+5. 确保数据目录仅对服务账户开放。容器内进程 UID/GID 为 `10001:10001`。
 
----
+API Hash、`.env` 和会话文件都不得提交到仓库或写入日志。会话文件等同于账号登录权限。
 
-> 官方实例：[@ParseHubot](https://t.me/ParseHubot)
+## 本地运行
 
-## ✨ 功能特性
-
-- 🎬 **多平台解析** — 抖音、B站、YouTube、小红书、Twitter 等 16+ 主流平台一站搞定
-- ⚡ **内联模式** — 在任意聊天窗口输入 `@BotUsername <链接>` 即可解析
-- 🖼️ **Tg 兼容** — 自动转码、长图切割、大视频分段
-- 📦 **多种模式** — 在线预览, 原始文件, 打包下载
-- 🐳 **Docker 部署** — 开箱即用
-
-## 📦 支持平台一览
-
-| 平台              | 视频 | 图文 |      其他       |
-|:----------------|:--:|:--:|:-------------:|
-| **Twitter / X** | ✅  | ✅  |     📝 文章     |
-| **Instagram**   | ✅  | ✅  |               |
-| **YouTube**     | ✅  |    |     🎵 音乐     |
-| **Facebook**    | ✅  |    |               |
-| **Threads**     | ✅  | ✅  |               |
-| **Bilibili**    | ✅  |    |     📝 动态     |
-| **抖音**          | ✅  | ✅  |     ☀️日常      |
-| **TikTok**      | ✅  | ✅  |               |
-| **微博**          | ✅  | ✅  |               |
-| **小红书**         | ✅  | ✅  |               |
-| **贴吧**          | ✅  | ✅  |               |
-| **微信公众号**       |    | ✅  |               |
-| **快手**          | ✅  |    |               |
-| **酷安**          |    | ✅  |               |
-| **皮皮虾**         | ✅  | ✅  |               |
-| **最右**          | ✅  | ✅  |               |
-| **小黑盒**         | ✅  | ✅  |               |
-| **Snapchat**    | ✅  |    |               |
-| **知乎**          | ✅  | ✅  | 🐶 问答, 专栏, 圈子 |
-
-> 🔧 更多平台持续接入中...
-
-## 🚀 快速开始
-
-### 🐳 Docker 运行 (推荐)
+安装依赖并创建会话：
 
 ```bash
-git clone https://github.com/121909/antidunai.git
-cd antidunai
-git switch feature/burst-video-guard
-cp .env.exa .env
-# 编辑 .env，填写 Telegram 凭据和防刷屏配置
-
-docker build -t antidunai:burst-video-guard .
-docker run -d \
-  --restart=always \
-  --env-file .env \
-  -v ./logs:/app/logs \
-  -v ./data:/app/data \
-  --name antidunai \
-  antidunai:burst-video-guard
+uv sync --frozen
+uv run python -m burst_guard.login
+chmod 600 /path/to/burst-guard.session
+uv run python -m burst_guard
 ```
 
-也可以在完成 `.env` 配置后运行 `docker compose up -d --build`，Compose 会构建当前 `antidunai` 工作树，不会拉取上游机器人镜像。
+常驻服务不会交互式询问手机号、验证码或两步验证密码。会话缺失、账号不匹配或任一群权限不足时，启动检查会立即失败。
 
-### 💻 源码运行
-
-```bash
-uv sync
-uv run bot.py
-```
-
----
-
-## ⚙️ 配置说明
-
-- **环境变量:** 基础配置
-- **平台配置 (可选):** 平台代理和 Cookie
-
-### 📝 环境变量
+配置默认 `BURST_GUARD_ENABLED=false` 且 `BURST_GUARD_DRY_RUN=true`。首次部署应先启用功能但保持试运行：
 
 ```dotenv
-# ✅ 必填
-API_ID=        # Telegram API ID，登录 https://my.telegram.org 获取
-API_HASH=      # Telegram API Hash，同上获取
-BOT_TOKEN=     # 机器人 Token，向 @BotFather 申请
-
-# 🔲 可选
-BOT_PROXY=     # Bot 连接 TG 使用的代理，例：http://127.0.0.1:7890
+BURST_GUARD_ENABLED=true
+BURST_GUARD_DRY_RUN=true
 ```
 
-### 群组视频刷屏治理
+## Docker Compose
 
-该功能默认关闭，仅在群组和超级群组中生效。启用前，机器人必须是群管理员并具有删除消息权限；同时需关闭 BotFather 隐私模式，或确保管理员身份可以接收完整群消息。
-
-```dotenv
-BURST_GUARD_ENABLED=false
-BURST_GUARD_TARGETS=123456789,@username
-BURST_GUARD_THRESHOLD=3
-BURST_GUARD_VIDEO_PLATFORMS=douyin,bilibili,youtube
-```
-
-`BURST_GUARD_TARGETS` 接受逗号分隔的 Telegram 用户 ID 或用户名，用户名匹配不区分大小写且可带 `@`。优先配置固定用户 ID，因为用户名可能变更或缺失。`BURST_GUARD_THRESHOLD` 最小为 3；平台白名单使用 ParseHub 的平台 ID。对于同时支持视频和图文的平台，首个版本仅按平台识别，建议只加入确认用于视频解析的平台。
-
-机器人重启后内存中的连续段会清空，不追溯历史消息。权限不足时无法删除源消息或解析结果，应先检查群管理员权限和日志。
-
-#### 真实群验收
-
-在启动机器人前，将测试群 ID 写入本地 `.env` 的 `BURST_GUARD_TEST_CHAT_ID`，运行只读前置检查：
+先创建只允许服务 UID 访问的数据目录，再执行独立登录命令：
 
 ```bash
-uv run python -m scripts.verify_burst_guard_live
+mkdir -p data
+sudo chown 10001:10001 data
+chmod 700 data
+docker compose --profile login run --rm login
+docker compose up -d burst-guard
 ```
 
-该命令只读取群类型、机器人管理员权限和目标用户成员状态，不发送或删除消息。检查通过后启动机器人，由目标用户按 `DEVELOPMENT_PLAN.md` 第 12 节依次执行 7 个测试群用例，并在全部通过后勾选实施项 8。验收期间不得使用生产群或真实隐私数据。
+不要同时运行 `login` 与常驻服务。容器以非 root 用户、只读根文件系统、无 Linux capabilities 运行；只有 `/app/data` 和临时目录可写。
 
-### 🌐 平台配置
+健康检查默认只绑定宿主机 `127.0.0.1`：
 
-用于为各解析平台单独配置**代理**和 **Cookie**，位于 `data/config/platform_config.yaml`
-
-```yaml
-# ═══════════════════════ 全局默认代理 ═══════════════════════
-# 当某平台未单独配置代理时，会使用全局默认代理
-# 支持填写单个地址(字符串)或多个地址(列表，随机选取)
-
-default_parser_proxies: http://127.0.0.1:7890        # 解析代理（单个）
-default_downloader_proxies: # 下载代理（代理池）
-  - http://127.0.0.1:7890
-  - http://127.0.0.1:7891
-
-# ═══════════════════════ 平台独立配置 ═══════════════════════
-platforms:
-  <platform_id>: # 平台 ID，见下方支持列表
-    disable_parser_proxy: false          # 是否禁用解析代理（直连）
-    disable_downloader_proxy: false      # 是否禁用下载代理（直连）
-    parser_proxies: # 该平台专用解析代理池
-      - http://proxy1:port
-    downloader_proxies: # 该平台专用下载代理池
-      - http://proxy2:port
-    cookies: # 该平台 Cookie 列表（随机选取）
-      - "cookie_string_1"
-      - "cookie_string_2"
+```text
+GET /health/live
+GET /health/ready
 ```
 
-Cookie 必须写在 `data/config/platform_config.yaml`，不是 `.env`。可以先复制仓库里的 `platform_config.example.yaml`：
+`ready` 仅在配置有效、启动检查通过、MTProto 已连接且更新监听运行时返回 HTTP 200。
+
+## 配置
+
+完整键名和安全默认值见 [`.env.example`](.env.example)。主要规则如下：
+
+- `BURST_GUARD_CHAT_IDS` 是至少一个逗号分隔的群组 ID。
+- `BURST_GUARD_TARGETS` 接受正整数用户 ID 或用户名。生产环境优先使用稳定的数字 ID。
+- `BURST_GUARD_THRESHOLD` 不得小于 3。
+- `BURST_GUARD_VIDEO_DOMAINS` 仅填写域名，不填写 scheme 或路径；子域名自动匹配，短链接域名必须显式列出。
+- `BURST_GUARD_DELETE_BATCH_SIZE` 范围为 1 到 100。
+- `TELEGRAM_SESSION_PATH` 在容器部署中应位于 `/app/data`。
+
+日志为单行 JSON，只记录 ID、计数、状态和错误类型，不记录消息正文、完整 URL、API Hash 或会话内容。
+
+## 验收
+
+先保持 `BURST_GUARD_DRY_RUN=true`，运行真实群验收监听：
 
 ```bash
-mkdir -p data/config
-cp platform_config.example.yaml data/config/platform_config.yaml
+uv run python scripts/verify_live.py --duration 180 --minimum-candidates 3 --minimum-planned 2
 ```
 
-格式是浏览器开发者工具 Network 请求中的 `Cookie` 请求头内容：`name=value; name2=value2`。也支持 JSON 对象字符串。不要直接粘贴 Netscape 格式的 cookies.txt；请从浏览器复制 Cookie 请求头，或先转换成下面的格式。
+在测试群依次验证两条候选、第三条候选、普通文本、其他真人打断、机器人消息及非白名单群。脚本只汇总进程内计数，不输出消息内容。试运行通过后才将 `BURST_GUARD_DRY_RUN=false`，并用 `--allow-real-delete` 明确允许验收脚本执行真实删除。
 
-```yaml
-platforms:
-  twitter:
-    cookies:
-      - 'auth_token=YOUR_VALUE; ct0=YOUR_VALUE'
-  instagram:
-    cookies:
-      - 'sessionid=YOUR_VALUE; ds_user_id=YOUR_VALUE; csrftoken=YOUR_VALUE'
-  threads:
-    cookies:
-      - 'sessionid=YOUR_VALUE; csrftoken=YOUR_VALUE'
-  youtube:
-    cookies:
-      - 'LOGIN_INFO=YOUR_VALUE; SID=YOUR_VALUE; HSID=YOUR_VALUE; SSID=YOUR_VALUE; SAPISID=YOUR_VALUE'
-  bilibili:
-    cookies:
-      - 'SESSDATA=YOUR_VALUE; bili_jct=YOUR_VALUE; DedeUserID=YOUR_VALUE'
-  douyin:
-    cookies:
-      - 'sessionid=YOUR_VALUE; sessionid_ss=YOUR_VALUE; ttwid=YOUR_VALUE'
-  tiktok:
-    cookies:
-      - 'sessionid=YOUR_VALUE; sid_tt=YOUR_VALUE; tt_chain_token=YOUR_VALUE'
-  kuaishou:
-    cookies:
-      - 'kuaishou.live.b1=YOUR_VALUE; userId=YOUR_VALUE'
-  xhs:
-    cookies:
-      - 'a1=YOUR_VALUE; webId=YOUR_VALUE; web_session=YOUR_VALUE; xsecappid=YOUR_VALUE'
-  zhihu:
-    cookies:
-      - 'z_c0=YOUR_VALUE; _xsrf=YOUR_VALUE'
-```
-
-平台 ID 必须使用 `twitter`、`instagram`、`threads`、`youtube`、`bilibili`、`douyin`、`tiktok`、`kuaishou`、`xhs`、`zhihu` 等内部 ID。Cookie 是敏感凭据，不要提交到 Git、发到群聊或写入公开日志；失效后替换对应列表项并重启容器。
-
-### 🔀 代理优先级
-
-解析代理和下载代理各自遵循相同的优先级逻辑：
-
-```
-禁用代理 (disable_*_proxy: true)
-  ↓ 未禁用
-平台专用代理 (parser_proxies / downloader_proxies)
-  ↓ 未配置
-全局默认代理 (default_parser_proxies / default_downloader_proxies)
-  ↓ 未配置
-直连（不使用代理）
-```
-
-> 💡 当代理池中有多个地址时，每次请求会**随机选取**一个
-
-### 🔑 支持的平台 ID
-
-`<platform_id>` 必须是以下合法的平台 ID：
-
-| 平台 ID       | 对应平台        |
-|:------------|:------------|
-| `twitter`   | Twitter / X |
-| `instagram` | Instagram   |
-| `youtube`   | YouTube     |
-| `facebook`  | Facebook    |
-| `threads`   | Threads     |
-| `bilibili`  | 哔哩哔哩        |
-| `douyin`    | 抖音          |
-| `tiktok`    | TikTok      |
-| `weibo`     | 微博          |
-| `xhs`       | 小红书         |
-| `tieba`     | 百度贴吧        |
-| `wechat`    | 微信公众号       |
-| `kuaishou`  | 快手          |
-| `coolapk`   | 酷安          |
-| `pipixia`   | 皮皮虾         |
-| `zuiyou`    | 最右          |
-| `xiaoheihe` | 小黑盒         |
-| `snapchat`  | Snapchat    |
-| `zhihu`     | 知乎          |
-
-### 🍪 支持 Cookie 的平台
-
-- `Twitter / X`
-- `Instagram`
-- `Threads`
-- `YouTube`
-- `Bilibili`
-- `抖音`
-- `TikTok`
-- `快手`
-- `小红书`
-- `知乎`
-
-### 📌 配置示例
-
-##### 示例 1：国内平台直连，海外平台走代理
-
-```yaml
-default_parser_proxies: http://127.0.0.1:7890
-default_downloader_proxies: http://127.0.0.1:7890
-
-platforms:
-  bilibili:
-    disable_parser_proxy: true
-    disable_downloader_proxy: true
-  douyin:
-    disable_parser_proxy: true
-    disable_downloader_proxy: true
-  xhs:
-    disable_parser_proxy: true
-    disable_downloader_proxy: true
-```
-
-#### 示例 2：Twitter 配置 Cookie + 使用全局代理
-
-```yaml
-default_parser_proxies: http://127.0.0.1:7890
-default_downloader_proxies: http://127.0.0.1:7890
-
-platforms:
-  twitter:
-    cookies:
-      - "auth_token=your_token_here; ct0=your_ct0_here"
-```
-
-#### 示例 3：YouTube 使用独立代理池
-
-```yaml
-platforms:
-  youtube:
-    parser_proxies:
-      - http://proxy-us-1:8080
-      - http://proxy-us-2:8080
-      - http://proxy-eu-1:8080
-    downloader_proxies:
-      - http://proxy-us-1:8080
-      - http://proxy-eu-1:8080
-```
-
-#### 示例 4：B站指定 Cookie 轮换 + 解析直连 + 下载走代理
-
-```yaml
-platforms:
-  bilibili:
-    disable_parser_proxy: true
-    downloader_proxies:
-      - http://127.0.0.1:7890
-    cookies:
-      - "SESSDATA=xxx; bili_jct=xxx; buvid3=xxx"
-      - "SESSDATA=yyy; bili_jct=yyy; buvid3=yyy"
-```
-
-## 🌟 Star History
-
-<a href="https://www.star-history.com/?type=date&repos=z-mio%2FParse_Hub_Bot">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=z-mio/Parse_Hub_Bot&type=date&theme=dark&legend=top-left&sealed_token=n_B6V73FCZt16MtUaTQowR-ZQ1pdhKCd94W-9symYgpKxNI0h62EyiVFeaTIVana0l0ZYCGLFye8lCdeaXM4OPmIByiQqnbBewQtQM3bRlPd61GHsqtyg7LQGCdZoGEitbc2y_m7V9cO-04CnJwKTd7Rrct1JSNi0oLZlHPJ-DhBMpwTEp25929J4KLM" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=z-mio/Parse_Hub_Bot&type=date&legend=top-left&sealed_token=n_B6V73FCZt16MtUaTQowR-ZQ1pdhKCd94W-9symYgpKxNI0h62EyiVFeaTIVana0l0ZYCGLFye8lCdeaXM4OPmIByiQqnbBewQtQM3bRlPd61GHsqtyg7LQGCdZoGEitbc2y_m7V9cO-04CnJwKTd7Rrct1JSNi0oLZlHPJ-DhBMpwTEp25929J4KLM" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=z-mio/Parse_Hub_Bot&type=date&legend=top-left&sealed_token=n_B6V73FCZt16MtUaTQowR-ZQ1pdhKCd94W-9symYgpKxNI0h62EyiVFeaTIVana0l0ZYCGLFye8lCdeaXM4OPmIByiQqnbBewQtQM3bRlPd61GHsqtyg7LQGCdZoGEitbc2y_m7V9cO-04CnJwKTd7Rrct1JSNi0oLZlHPJ-DhBMpwTEp25929J4KLM" />
- </picture>
-</a>
-
-## 🤝 参与贡献
-
-欢迎提交 Pull Request 或 Issue!
-
-- 核心解析相关请前往 [ParseHub](https://github.com/z-mio/ParseHub)
-- Bug 反馈请附上相关 URL 和日志信息
-
-### 开发规范
-
-提交代码前请至少执行:
+## 开发检查
 
 ```bash
-ruff format && ruff check --fix && uv run mypy
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy src
+uv run pytest
+uv run pip-audit --skip-editable
+docker compose config --quiet
+docker build -t burst-guard:test .
 ```
 
-## 📄 开源协议
-
-本项目基于 [MIT License](LICENSE) 协议开源
-
----
-
-<div align="center">
-
-**如果这个项目对你有帮助，欢迎点个 ⭐ Star!**
-
-</div>
-
+核心业务模型位于 `src/burst_guard`：分类器是纯函数；状态服务按群组加锁并在锁内完成抽样状态推进；处理器取得清理请求后才在锁外调用 Telegram API。删除按批处理，`FloodWaitError` 按服务端秒数有限重试，单批失败不会中止后续批次。

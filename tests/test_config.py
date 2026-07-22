@@ -1,66 +1,67 @@
-from pathlib import Path
+from __future__ import annotations
+
+from collections.abc import Callable
 
 import pytest
 from pydantic import ValidationError
 
-from core.config import BotSettings
+from burst_guard.config import Settings, normalize_domain
 
 
-def make_settings(tmp_path: Path, **overrides: object) -> BotSettings:
-    values: dict[str, object] = {
-        "bot_token": "1:test-token",
-        "api_id": "1",
-        "api_hash": "test-hash",
-        "data_path": tmp_path,
-        "database_url": f"sqlite+aiosqlite:///{tmp_path / 'database.db'}",
-    }
-    values.update(overrides)
-    return BotSettings(**values)  # type: ignore[arg-type]
-
-
-def test_burst_guard_defaults_to_disabled(tmp_path: Path) -> None:
-    settings = make_settings(tmp_path)
-
-    assert settings.burst_guard_enabled is False
-    assert settings.burst_guard_threshold == 3
-    assert settings.burst_guard_targets == frozenset()
-    assert settings.burst_guard_video_platforms == frozenset()
-
-
-def test_burst_guard_csv_values_are_normalized(tmp_path: Path) -> None:
-    settings = make_settings(
-        tmp_path,
-        burst_guard_enabled=True,
-        burst_guard_targets="123456, @Some_User, some_user",
-        burst_guard_video_platforms="DouYin, bilibili, YOUTUBE",
+def test_csv_values_are_normalized(settings_factory: Callable[..., Settings]) -> None:
+    settings = settings_factory(
+        chat_ids=" -1002, -1001,-1001 ",
+        targets="101, @Video_User,video_user",
+        video_domains="YouTube.COM.,例子.测试,YouTube.com:443",
     )
 
-    assert settings.burst_guard_targets == frozenset({"123456", "some_user"})
-    assert settings.burst_guard_video_platforms == frozenset({"douyin", "bilibili", "youtube"})
-    assert settings.is_burst_guard_target(123456, None) is True
-    assert settings.is_burst_guard_target(999, "@SOME_USER") is True
-    assert settings.is_burst_guard_target(999, None) is False
+    assert settings.chat_ids == frozenset({-1001, -1002})
+    assert settings.target_user_ids == frozenset({101})
+    assert settings.target_usernames == frozenset({"video_user"})
+    assert settings.video_domains == frozenset({"youtube.com", "xn--fsqu00a.xn--0zwm56d"})
+    assert settings.threshold == 3
+    assert settings.enabled is True
+    assert settings.dry_run is True
 
 
-def test_burst_guard_csv_values_load_from_environment(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+def test_target_matching_prefers_stable_user_id(
+    settings_factory: Callable[..., Settings],
 ) -> None:
-    monkeypatch.setenv("BURST_GUARD_TARGETS", "123456,@Some_User")
-    monkeypatch.setenv("BURST_GUARD_VIDEO_PLATFORMS", "douyin,bilibili,youtube")
+    settings = settings_factory()
 
-    settings = make_settings(tmp_path)
-
-    assert settings.burst_guard_targets == frozenset({"123456", "some_user"})
-    assert settings.burst_guard_video_platforms == frozenset({"douyin", "bilibili", "youtube"})
-
-
-def test_burst_guard_target_id_takes_precedence_over_missing_username(tmp_path: Path) -> None:
-    settings = make_settings(tmp_path, burst_guard_targets=["123456", "named_user"])
-
-    assert settings.is_burst_guard_target(123456, None) is True
+    assert settings.target_key(101, None) == "id:101"
+    assert settings.target_key(202, "VIDEO_USER") == "id:202"
+    assert settings.target_key(None, "@video_user") == "username:video_user"
+    assert settings.target_key(202, "someone_else") is None
 
 
-def test_burst_guard_threshold_cannot_be_below_three(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("telegram_api_id", 0),
+        ("threshold", 2),
+        ("delete_batch_size", 0),
+        ("delete_batch_size", 101),
+        ("chat_ids", ""),
+        ("targets", ""),
+        ("targets", "bad-user!"),
+        ("video_domains", "https://youtube.com/watch"),
+        ("log_level", "verbose"),
+    ],
+)
+def test_invalid_configuration_fails_clearly(
+    settings_factory: Callable[..., Settings], field: str, value: object
+) -> None:
     with pytest.raises(ValidationError):
-        make_settings(tmp_path, burst_guard_threshold=2)
+        settings_factory(**{field: value})
+
+
+def test_automation_account_cannot_be_target(
+    settings_factory: Callable[..., Settings],
+) -> None:
+    with pytest.raises(ValidationError, match="automation account"):
+        settings_factory(targets="9001")
+
+
+def test_domain_normalization_removes_port_and_trailing_dot() -> None:
+    assert normalize_domain("WWW.Example.COM.:8443") == "www.example.com"

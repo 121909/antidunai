@@ -1,14 +1,47 @@
-name: antidunai
-
 services:
-  bot:
-    image: antidunai:burst-video-guard
-    build:
-      context: .
-      dockerfile: Dockerfile
+  burst-guard:
+    build: .
+    image: burst-guard:local
     restart: unless-stopped
-    env_file:
-      - .env
+    init: true
+    env_file: ${BURST_GUARD_ENV_FILE:-.env}
     volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
+      - ${BURST_GUARD_DATA_DIR:-./data}:/app/data
+    ports:
+      - "${BURST_GUARD_HEALTH_BIND:-127.0.0.1}:${BURST_GUARD_HEALTH_PORT:-8080}:${BURST_GUARD_HEALTH_PORT:-8080}"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.getenv('BURST_GUARD_HEALTH_PORT','8080')+'/health/ready',timeout=2)"
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+  login:
+    build: .
+    image: burst-guard:local
+    profiles: ["login"]
+    init: true
+    stdin_open: true
+    tty: true
+    env_file: ${BURST_GUARD_ENV_FILE:-.env}
+    volumes:
+      - ${BURST_GUARD_DATA_DIR:-./data}:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    entrypoint: ["python", "-m", "burst_guard.login"]
