@@ -26,12 +26,14 @@ async def send(
     chat_id: int = -1,
     target: str | None = "id:10",
     candidate: bool = True,
+    urls: frozenset[str] = frozenset(),
 ):
     return await service.process(
         chat_id=chat_id,
         message_id=message_id,
         target_key=target,
         is_candidate=candidate,
+        candidate_url_keys=urls,
     )
 
 
@@ -118,3 +120,98 @@ async def test_seen_ids_expire_and_idle_state_is_removed() -> None:
     now = 111.0
     assert await service.cleanup_expired() == 1
     assert not (await send(service, 1, target=None, candidate=False)).duplicate
+
+
+@pytest.mark.asyncio
+async def test_parser_outputs_before_and_after_eviction_are_deleted() -> None:
+    service = BurstStateService(3, 60, random_source=FixedRandom([0]))
+    link_a = frozenset({"youtube.com/watch?v=a"})
+    link_b = frozenset({"youtube.com/watch?v=b"})
+    link_c = frozenset({"youtube.com/watch?v=c"})
+
+    await send(service, 1, urls=link_a)
+    retained_output = await service.process_parser_output(
+        chat_id=-1, message_id=101, url_keys=link_a
+    )
+    await send(service, 2, urls=link_b)
+    await service.process_parser_output(chat_id=-1, message_id=102, url_keys=link_b)
+    third = await send(service, 3, urls=link_c)
+
+    assert retained_output.cleanup is None
+    assert third.cleanup is not None
+    assert third.cleanup.message_ids == (2, 3, 102)
+
+    late_discarded = await service.process_parser_output(
+        chat_id=-1, message_id=103, url_keys=link_c
+    )
+    late_retained = await service.process_parser_output(chat_id=-1, message_id=104, url_keys=link_a)
+    assert late_discarded.cleanup is not None
+    assert late_discarded.cleanup.message_ids == (103,)
+    assert late_retained.cleanup is None
+    assert service.chat_state(-1).active_run is not None
+
+
+@pytest.mark.asyncio
+async def test_shared_url_with_retained_candidate_is_never_link_deleted() -> None:
+    service = BurstStateService(3, 60, random_source=FixedRandom([0]))
+    shared = frozenset({"youtube.com/watch?v=same"})
+
+    await send(service, 1, urls=shared)
+    await service.process_parser_output(chat_id=-1, message_id=101, url_keys=shared)
+    await send(service, 2, urls=shared)
+    third = await send(service, 3, urls=shared)
+    late = await service.process_parser_output(chat_id=-1, message_id=102, url_keys=shared)
+
+    assert third.cleanup is not None
+    assert third.cleanup.message_ids == (2, 3)
+    assert late.cleanup is None
+
+
+@pytest.mark.asyncio
+async def test_unrelated_parser_url_is_not_remembered_or_deleted() -> None:
+    service = BurstStateService(3, 60, random_source=FixedRandom([0]))
+    active = frozenset({"youtube.com/watch?v=active"})
+    unrelated = frozenset({"youtube.com/watch?v=other"})
+    await send(service, 1, urls=active)
+
+    output = await service.process_parser_output(chat_id=-1, message_id=101, url_keys=unrelated)
+
+    assert output.cleanup is None
+    assert service.chat_state(-1).pending_parser_messages == {}
+
+
+@pytest.mark.asyncio
+async def test_parser_message_with_retained_and_discarded_links_is_protected() -> None:
+    service = BurstStateService(3, 60, random_source=FixedRandom([0]))
+    link_a = frozenset({"youtube.com/watch?v=a"})
+    link_b = frozenset({"youtube.com/watch?v=b"})
+
+    await send(service, 1, urls=link_a)
+    await send(service, 2, urls=link_b)
+    combined = await service.process_parser_output(
+        chat_id=-1, message_id=101, url_keys=link_a | link_b
+    )
+    third = await send(service, 3, urls=frozenset({"youtube.com/watch?v=c"}))
+    late_combined = await service.process_parser_output(
+        chat_id=-1, message_id=102, url_keys=link_a | link_b
+    )
+
+    assert combined.cleanup is None
+    assert third.cleanup is not None
+    assert third.cleanup.message_ids == (2, 3)
+    assert late_combined.cleanup is None
+
+
+@pytest.mark.asyncio
+async def test_replaced_retained_link_loses_protection() -> None:
+    service = BurstStateService(3, 60, random_source=FixedRandom([0, 0]))
+    link_a = frozenset({"youtube.com/watch?v=a"})
+    await send(service, 1, urls=link_a)
+    await service.process_parser_output(chat_id=-1, message_id=101, url_keys=link_a)
+    await send(service, 2, urls=frozenset({"youtube.com/watch?v=b"}))
+    await send(service, 3, urls=frozenset({"youtube.com/watch?v=c"}))
+
+    replacement = await send(service, 4, urls=frozenset({"youtube.com/watch?v=d"}))
+
+    assert replacement.cleanup is not None
+    assert replacement.cleanup.message_ids == (1, 101)

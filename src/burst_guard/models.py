@@ -33,7 +33,9 @@ class BurstRun:
     target_key: str
     candidate_count: int = 0
     retained_message_id: int | None = None
+    retained_url_keys: frozenset[str] = frozenset()
     warmup_message_ids: list[int] = field(default_factory=list)
+    warmup_url_keys: dict[int, frozenset[str]] = field(default_factory=dict)
     closed: bool = False
 
 

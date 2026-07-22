@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from burst_guard.classifier import extract_urls, is_video_candidate
+from burst_guard.classifier import (
+    candidate_url_keys,
+    canonical_url_key,
+    extract_urls,
+    is_video_candidate,
+)
 from burst_guard.models import IncomingMessage
 
 
@@ -63,4 +68,23 @@ def test_multiple_urls_still_form_one_candidate_message() -> None:
 def test_url_trailing_punctuation_is_ignored() -> None:
     assert is_video_candidate(
         message(text="(https://youtube.com/watch?v=1)。"), frozenset({"youtube.com"})
+    )
+
+
+def test_original_url_key_ignores_presentation_only_differences() -> None:
+    expected = "youtube.com/watch?v=1"
+
+    assert canonical_url_key("https://YouTube.com:443/watch/?v=1#source") == expected
+    assert canonical_url_key("http://youtube.com/watch?v=1") == expected
+    assert canonical_url_key("youtube.com/watch?v=1") == expected
+
+
+def test_candidate_url_keys_only_include_configured_video_domains() -> None:
+    incoming = message(
+        text="https://youtube.com/watch?v=1 https://example.com/watch?v=1",
+        entity_urls=("https://m.youtube.com/watch?v=2",),
+    )
+
+    assert candidate_url_keys(incoming, frozenset({"youtube.com"})) == frozenset(
+        {"youtube.com/watch?v=1", "m.youtube.com/watch?v=2"}
     )

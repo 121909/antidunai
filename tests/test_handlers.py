@@ -164,3 +164,74 @@ def test_hidden_entity_url_is_adapted() -> None:
     incoming = to_incoming_message(event, SimpleNamespace(username="name"))
 
     assert incoming.entity_urls == ("https://youtube.com/hidden",)
+
+
+@pytest.mark.asyncio
+async def test_late_parser_video_with_discarded_original_url_is_deleted(
+    settings_factory: Callable[..., Settings],
+) -> None:
+    handler, _, cleanup, metrics = make_handler(settings_factory())
+
+    await handler(FakeEvent(1, 101, text="https://youtube.com/watch?v=1"))
+    await handler(FakeEvent(2, 101, text="https://youtube.com/watch?v=2"))
+    await handler(FakeEvent(3, 101, text="https://youtube.com/watch?v=3"))
+    await handler(
+        FakeEvent(
+            20,
+            500,
+            bot=True,
+            video=True,
+            text="原链接: HTTP://YOUTUBE.COM/watch?v=2#result",
+        )
+    )
+    await handler(
+        FakeEvent(
+            21,
+            500,
+            bot=True,
+            video=True,
+            text="原链接: https://youtube.com/watch?v=1",
+        )
+    )
+
+    assert [request.message_ids for request in cleanup.requests] == [(2, 3), (20,)]
+    assert metrics.get("parser_outputs_received") == 2
+    assert metrics.get("parser_outputs_matched") == 1
+
+
+@pytest.mark.asyncio
+async def test_parser_video_arriving_before_threshold_is_deleted_with_source(
+    settings_factory: Callable[..., Settings],
+) -> None:
+    handler, state, cleanup, _ = make_handler(settings_factory())
+
+    await handler(FakeEvent(1, 101, text="https://youtube.com/watch?v=1"))
+    await handler(FakeEvent(2, 101, text="https://youtube.com/watch?v=2"))
+    await handler(
+        FakeEvent(
+            20,
+            500,
+            bot=True,
+            video=True,
+            text="https://youtube.com/watch?v=2",
+        )
+    )
+    assert state.chat_state(-1001).active_run is not None
+    await handler(FakeEvent(3, 101, text="https://youtube.com/watch?v=3"))
+
+    assert [request.message_ids for request in cleanup.requests] == [(2, 3, 20)]
+
+
+@pytest.mark.asyncio
+async def test_bot_text_without_video_is_not_deleted(
+    settings_factory: Callable[..., Settings],
+) -> None:
+    handler, _, cleanup, metrics = make_handler(settings_factory())
+    await handler(FakeEvent(1, 101, text="https://youtube.com/watch?v=1"))
+    await handler(FakeEvent(2, 101, text="https://youtube.com/watch?v=2"))
+    await handler(FakeEvent(3, 101, text="https://youtube.com/watch?v=3"))
+
+    await handler(FakeEvent(20, 500, bot=True, text="https://youtube.com/watch?v=2"))
+
+    assert [request.message_ids for request in cleanup.requests] == [(2, 3)]
+    assert metrics.get("parser_outputs_received") == 0

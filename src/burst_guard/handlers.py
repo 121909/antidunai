@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from burst_guard.classifier import is_video_candidate
+from burst_guard.classifier import candidate_url_keys, has_video_media
 from burst_guard.cleanup import CleanupService
 from burst_guard.config import Settings
 from burst_guard.logging import log_event
@@ -76,21 +76,23 @@ class TelegramUpdateHandler:
             return
 
         sender = await event.get_sender()
-        if getattr(sender, "bot", False):
-            return
-
         incoming = to_incoming_message(event, sender)
         if incoming.sender_id == self._settings.telegram_expected_user_id:
+            return
+        if getattr(sender, "bot", False):
+            await self._handle_parser_output(incoming)
             return
         self._metrics.increment("group_messages_received")
 
         target_key = self._settings.target_key(incoming.sender_id, incoming.sender_username)
-        candidate = bool(target_key and is_video_candidate(incoming, self._settings.video_domains))
+        url_keys = candidate_url_keys(incoming, self._settings.video_domains)
+        candidate = bool(target_key and (url_keys or has_video_media(incoming)))
         result = await self._state.process(
             chat_id=incoming.chat_id,
             message_id=incoming.message_id,
             target_key=target_key,
             is_candidate=candidate,
+            candidate_url_keys=url_keys,
         )
         if result.duplicate:
             self._metrics.increment("duplicate_updates")
@@ -114,4 +116,34 @@ class TelegramUpdateHandler:
             run_closed=result.run_closed,
         )
         if result.cleanup is not None:
+            await self._cleanup.execute(result.cleanup)
+
+    async def _handle_parser_output(self, incoming: IncomingMessage) -> None:
+        if not has_video_media(incoming):
+            return
+        url_keys = candidate_url_keys(incoming, self._settings.video_domains)
+        if not url_keys:
+            return
+        self._metrics.increment("parser_outputs_received")
+        result = await self._state.process_parser_output(
+            chat_id=incoming.chat_id,
+            message_id=incoming.message_id,
+            url_keys=url_keys,
+        )
+        if result.duplicate:
+            self._metrics.increment("duplicate_updates")
+            return
+        matched = result.cleanup is not None
+        log_event(
+            self._logger,
+            logging.INFO,
+            "parser_output_processed",
+            chat_id=incoming.chat_id,
+            run_id=result.run_id,
+            sender_id=incoming.sender_id,
+            message_id=incoming.message_id,
+            matched_discarded_candidate=matched,
+        )
+        if result.cleanup is not None:
+            self._metrics.increment("parser_outputs_matched")
             await self._cleanup.execute(result.cleanup)
