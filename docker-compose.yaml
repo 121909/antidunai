@@ -1,8 +1,11 @@
-name: parse_hub_bot
+name: antidunai
 
 services:
   bot:
-    image: ghcr.io/z-mio/parse_hub_bot:latest
+    image: antidunai:burst-video-guard
+    build:
+      context: .
+      dockerfile: Dockerfile
     restart: unless-stopped
     env_file:
       - .env

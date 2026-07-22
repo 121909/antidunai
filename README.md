@@ -87,6 +87,8 @@ docker run -d \
   antidunai:burst-video-guard
 ```
 
+也可以在完成 `.env` 配置后运行 `docker compose up -d --build`，Compose 会构建当前 `antidunai` 工作树，不会拉取上游机器人镜像。
+
 ### 💻 源码运行
 
 ```bash
