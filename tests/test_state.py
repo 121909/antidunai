@@ -240,3 +240,89 @@ async def test_old_candidate_falling_out_of_window_is_protected() -> None:
     late = await service.process_parser_output(chat_id=-1, message_id=102, url_keys=link_a)
 
     assert late.cleanup is None
+
+
+@pytest.mark.asyncio
+async def test_configured_parser_outputs_are_bound_to_link_sources_in_order() -> None:
+    service = BurstStateService(3, 60, group_size=5, random_source=FixedRandom([0]))
+
+    await send(service, 1, urls=frozenset({"youtube.com/watch?v=a"}))
+    await send(service, 2, urls=frozenset({"youtube.com/watch?v=b"}))
+    triggered = await send(service, 3, urls=frozenset({"youtube.com/watch?v=c"}))
+    first = await service.process_parser_output(
+        chat_id=-1,
+        message_id=101,
+        url_keys=frozenset(),
+        use_next_link_source=True,
+    )
+    second = await service.process_parser_output(
+        chat_id=-1,
+        message_id=102,
+        url_keys=frozenset(),
+        use_next_link_source=True,
+    )
+    third = await service.process_parser_output(
+        chat_id=-1,
+        message_id=103,
+        url_keys=frozenset(),
+        use_next_link_source=True,
+    )
+
+    assert triggered.cleanup is not None
+    assert triggered.cleanup.message_ids == (2, 3)
+    assert first.cleanup is None
+    assert second.cleanup is not None
+    assert second.cleanup.message_ids == (102,)
+    assert third.cleanup is not None
+    assert third.cleanup.message_ids == (103,)
+
+
+@pytest.mark.asyncio
+async def test_early_fifo_parser_output_is_deleted_when_its_source_is_discarded() -> None:
+    service = BurstStateService(3, 60, group_size=5, random_source=FixedRandom([0]))
+
+    await send(service, 1, urls=frozenset({"youtube.com/watch?v=a"}))
+    await send(service, 2, urls=frozenset({"youtube.com/watch?v=b"}))
+    first_output = await service.process_parser_output(
+        chat_id=-1,
+        message_id=101,
+        url_keys=frozenset(),
+        use_next_link_source=True,
+    )
+    second_output = await service.process_parser_output(
+        chat_id=-1,
+        message_id=102,
+        url_keys=frozenset(),
+        use_next_link_source=True,
+    )
+    triggered = await send(service, 3, urls=frozenset({"youtube.com/watch?v=c"}))
+
+    assert first_output.cleanup is None
+    assert second_output.cleanup is None
+    assert triggered.cleanup is not None
+    assert triggered.cleanup.message_ids == (2, 3, 102)
+
+
+@pytest.mark.asyncio
+async def test_fifo_link_source_expires_with_idempotency_ttl() -> None:
+    now = 100.0
+    service = BurstStateService(
+        3,
+        60,
+        group_size=5,
+        random_source=FixedRandom([0]),
+        clock=lambda: now,
+    )
+    await send(service, 1, urls=frozenset({"youtube.com/watch?v=a"}))
+
+    now = 161.0
+    output = await service.process_parser_output(
+        chat_id=-1,
+        message_id=101,
+        url_keys=frozenset(),
+        use_next_link_source=True,
+    )
+
+    assert output.cleanup is None
+    assert service.chat_state(-1).unmatched_link_sources == {}
+    assert service.chat_state(-1).pending_parser_messages_by_source == {}

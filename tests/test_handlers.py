@@ -31,6 +31,7 @@ class FakeMessage:
         hidden_url: str | None = None,
         button_url: str | None = None,
         preview_url: str | None = None,
+        reply_to_message_id: int | None = None,
     ) -> None:
         self.id = message_id
         self.video = object() if video else None
@@ -48,6 +49,7 @@ class FakeMessage:
         self.web_preview = (
             SimpleNamespace(url=preview_url, display_url=None) if preview_url else None
         )
+        self.reply_to_msg_id = reply_to_message_id
 
     def get_entities_text(self) -> list[tuple[object, str]]:
         return []
@@ -226,6 +228,14 @@ def test_button_and_preview_urls_are_adapted() -> None:
     )
 
 
+def test_reply_message_id_is_adapted() -> None:
+    event = FakeEvent(1, 101, reply_to_message_id=42)
+
+    incoming = to_incoming_message(event, SimpleNamespace(username="name"))
+
+    assert incoming.reply_to_message_id == 42
+
+
 @pytest.mark.asyncio
 async def test_late_parser_video_with_discarded_original_url_is_deleted(
     settings_factory: Callable[..., Settings],
@@ -319,3 +329,71 @@ async def test_bot_text_without_video_is_not_deleted(
 
     assert [request.message_ids for request in cleanup.requests] == [(2, 3)]
     assert metrics.get("parser_outputs_received") == 0
+
+
+@pytest.mark.asyncio
+async def test_configured_parser_sender_videos_follow_link_order(
+    settings_factory: Callable[..., Settings],
+) -> None:
+    handler, _, cleanup, metrics = make_handler(
+        settings_factory(group_size=5, parser_sender_ids="7947627028")
+    )
+
+    await handler(FakeEvent(1, 101, text="https://youtube.com/watch?v=1"))
+    await handler(FakeEvent(2, 101, text="https://youtube.com/watch?v=2"))
+    await handler(FakeEvent(3, 101, text="https://youtube.com/watch?v=3"))
+    await handler(FakeEvent(20, 7947627028, bot=True, video=True))
+    await handler(FakeEvent(21, 7947627028, bot=True, video=True))
+    await handler(FakeEvent(22, 7947627028, bot=True, video=True))
+
+    assert [request.message_ids for request in cleanup.requests] == [(2, 3), (21,), (22,)]
+    assert metrics.get("parser_outputs_received") == 3
+    assert metrics.get("parser_outputs_matched") == 2
+
+
+@pytest.mark.asyncio
+async def test_parser_reply_takes_priority_over_sender_order(
+    settings_factory: Callable[..., Settings],
+) -> None:
+    handler, _, cleanup, _ = make_handler(
+        settings_factory(group_size=5, parser_sender_ids="7947627028")
+    )
+
+    await handler(FakeEvent(1, 101, text="https://youtube.com/watch?v=1"))
+    await handler(FakeEvent(2, 101, text="https://youtube.com/watch?v=2"))
+    await handler(FakeEvent(3, 101, text="https://youtube.com/watch?v=3"))
+    await handler(FakeEvent(20, 7947627028, video=True, reply_to_message_id=2))
+    await handler(FakeEvent(21, 7947627028, video=True))
+
+    assert [request.message_ids for request in cleanup.requests] == [(2, 3), (20,)]
+
+
+@pytest.mark.asyncio
+async def test_parser_source_link_takes_priority_and_normalizes_share_parameters(
+    settings_factory: Callable[..., Settings],
+) -> None:
+    handler, _, cleanup, _ = make_handler(
+        settings_factory(group_size=5, parser_sender_ids="7947627028")
+    )
+
+    await handler(
+        FakeEvent(
+            1,
+            101,
+            text="https://www.bilibili.com/video/BV1abc?spm_id_from=333&vd_source=x",
+        )
+    )
+    await handler(FakeEvent(2, 101, text="https://youtube.com/watch?v=2"))
+    await handler(FakeEvent(3, 101, text="https://youtube.com/watch?v=3"))
+    await handler(
+        FakeEvent(
+            20,
+            7947627028,
+            video=True,
+            text="Source",
+            hidden_url="https://m.bilibili.com/video/BV1abc?p=1",
+        )
+    )
+    await handler(FakeEvent(21, 7947627028, video=True))
+
+    assert [request.message_ids for request in cleanup.requests] == [(2, 3), (21,)]

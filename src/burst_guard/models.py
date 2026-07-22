@@ -10,6 +10,7 @@ class IncomingMessage:
     message_id: int
     sender_id: int | None
     sender_username: str | None = None
+    reply_to_message_id: int | None = None
     text: str | None = None
     caption: str | None = None
     entity_urls: tuple[str, ...] = ()

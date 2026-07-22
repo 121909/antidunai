@@ -27,7 +27,11 @@ class ChatState:
     target_windows: dict[str, TargetWindow] = field(default_factory=dict)
     recently_seen_message_ids: dict[int, float] = field(default_factory=dict)
     pending_parser_messages: dict[str, dict[int, float]] = field(default_factory=dict)
+    pending_parser_messages_by_source: dict[int, dict[int, float]] = field(default_factory=dict)
+    unmatched_link_sources: dict[int, float] = field(default_factory=dict)
+    source_url_keys: dict[int, frozenset[str]] = field(default_factory=dict)
     discarded_url_keys: dict[str, DiscardedUrl] = field(default_factory=dict)
+    discarded_source_message_ids: dict[int, DiscardedUrl] = field(default_factory=dict)
     protected_url_keys: dict[str, dict[int, float]] = field(default_factory=dict)
     last_touched: float = 0.0
 
@@ -91,6 +95,9 @@ class BurstStateService:
             if is_candidate:
                 window.candidate_message_ids.append(message_id)
                 window.candidate_url_keys[message_id] = candidate_url_keys
+                if candidate_url_keys:
+                    state.unmatched_link_sources[message_id] = now
+                    state.source_url_keys[message_id] = candidate_url_keys
 
             self._trim_window(state, window, now)
             message_count = len(window.window_message_ids)
@@ -119,6 +126,8 @@ class BurstStateService:
         chat_id: int,
         message_id: int,
         url_keys: frozenset[str],
+        reply_to_message_id: int | None = None,
+        use_next_link_source: bool = False,
     ) -> StateResult:
         state = self.chat_state(chat_id)
         async with state.lock:
@@ -127,6 +136,32 @@ class BurstStateService:
             self._purge_expired(state, now)
             if self._mark_seen(state, message_id, now):
                 return StateResult(duplicate=True)
+
+            active_source_ids = self._active_candidate_message_ids(state)
+            source_message_id = self._take_parser_source(
+                state,
+                url_keys,
+                reply_to_message_id,
+                active_source_ids,
+                use_next_link_source,
+            )
+            if source_message_id is not None:
+                discarded_source = state.discarded_source_message_ids.get(source_message_id)
+                if discarded_source is not None:
+                    return StateResult(
+                        cleanup=CleanupRequest(
+                            chat_id,
+                            (message_id,),
+                            "parser_output_for_discarded_source",
+                            discarded_source.run_id,
+                        ),
+                        run_id=discarded_source.run_id,
+                    )
+                if source_message_id in active_source_ids:
+                    state.pending_parser_messages_by_source.setdefault(source_message_id, {})[
+                        message_id
+                    ] = now
+                return StateResult()
 
             active_keys = self._active_url_keys(state)
             protected_keys = active_keys | frozenset(state.protected_url_keys)
@@ -148,6 +183,47 @@ class BurstStateService:
             for url_key in url_keys & active_keys:
                 state.pending_parser_messages.setdefault(url_key, {})[message_id] = now
             return StateResult()
+
+    @staticmethod
+    def _take_parser_source(
+        state: ChatState,
+        url_keys: frozenset[str],
+        reply_to_message_id: int | None,
+        active_source_ids: frozenset[int],
+        use_next_link_source: bool,
+    ) -> int | None:
+        known_source_ids = (
+            set(state.source_url_keys)
+            | set(state.discarded_source_message_ids)
+            | set(active_source_ids)
+        )
+        source_message_id: int | None = None
+        if reply_to_message_id in known_source_ids:
+            source_message_id = reply_to_message_id
+        elif url_keys:
+            matching_source_ids = [
+                candidate_id
+                for candidate_id in state.unmatched_link_sources
+                if url_keys & state.source_url_keys.get(candidate_id, frozenset())
+            ]
+            source_message_id = next(
+                (
+                    candidate_id
+                    for candidate_id in matching_source_ids
+                    if candidate_id in active_source_ids
+                ),
+                None,
+            )
+            if source_message_id is None and url_keys & frozenset(state.protected_url_keys):
+                return None
+            if source_message_id is None:
+                source_message_id = next(iter(matching_source_ids), None)
+        if source_message_id is None and use_next_link_source:
+            source_message_id = next(iter(state.unmatched_link_sources), None)
+        if source_message_id is not None:
+            state.unmatched_link_sources.pop(source_message_id, None)
+            state.source_url_keys.pop(source_message_id, None)
+        return source_message_id
 
     def _trim_window(self, state: ChatState, window: TargetWindow, now: float) -> None:
         while len(window.window_message_ids) > self.window_size:
@@ -190,6 +266,8 @@ class BurstStateService:
 
         parser_message_ids: set[int] = set()
         for candidate in deleted:
+            state.discarded_source_message_ids[candidate] = DiscardedUrl(now, window.run_id)
+            parser_message_ids.update(state.pending_parser_messages_by_source.get(candidate, {}))
             parser_message_ids.update(
                 self._discard_links(
                     state,
@@ -200,6 +278,7 @@ class BurstStateService:
                 )
             )
             window.candidate_url_keys.pop(candidate, None)
+        self._forget_parser_messages(state, parser_message_ids)
         window.candidate_message_ids = [retained_message_id]
 
         message_ids = (*deleted, *sorted(parser_message_ids - set(deleted)))
@@ -222,6 +301,14 @@ class BurstStateService:
         return frozenset(keys)
 
     @staticmethod
+    def _active_candidate_message_ids(state: ChatState) -> frozenset[int]:
+        return frozenset(
+            message_id
+            for window in state.target_windows.values()
+            for message_id in window.candidate_message_ids
+        )
+
+    @staticmethod
     def _forget_parser_messages(state: ChatState, message_ids: set[int]) -> None:
         if not message_ids:
             return
@@ -230,6 +317,11 @@ class BurstStateService:
                 messages.pop(message_id, None)
             if not messages:
                 del state.pending_parser_messages[url_key]
+        for source_id, messages in list(state.pending_parser_messages_by_source.items()):
+            for message_id in message_ids:
+                messages.pop(message_id, None)
+            if not messages:
+                del state.pending_parser_messages_by_source[source_id]
 
     def _discard_links(
         self,
@@ -295,12 +387,25 @@ class BurstStateService:
         for url_key, discarded in list(state.discarded_url_keys.items()):
             if discarded.discarded_at <= cutoff:
                 del state.discarded_url_keys[url_key]
+        for source_id, discarded in list(state.discarded_source_message_ids.items()):
+            if discarded.discarded_at <= cutoff:
+                del state.discarded_source_message_ids[source_id]
+        for source_id, seen_at in list(state.unmatched_link_sources.items()):
+            if seen_at <= cutoff:
+                del state.unmatched_link_sources[source_id]
+                state.source_url_keys.pop(source_id, None)
         for url_key, messages in list(state.pending_parser_messages.items()):
             for message_id, seen_at in list(messages.items()):
                 if seen_at <= cutoff:
                     del messages[message_id]
             if not messages:
                 del state.pending_parser_messages[url_key]
+        for source_id, messages in list(state.pending_parser_messages_by_source.items()):
+            for message_id, seen_at in list(messages.items()):
+                if seen_at <= cutoff:
+                    del messages[message_id]
+            if not messages:
+                del state.pending_parser_messages_by_source[source_id]
         for url_key, messages in list(state.protected_url_keys.items()):
             for message_id, protected_at in list(messages.items()):
                 if protected_at <= cutoff:
@@ -320,7 +425,11 @@ class BurstStateService:
                     and not state.target_windows
                     and not state.recently_seen_message_ids
                     and not state.pending_parser_messages
+                    and not state.pending_parser_messages_by_source
+                    and not state.unmatched_link_sources
+                    and not state.source_url_keys
                     and not state.discarded_url_keys
+                    and not state.discarded_source_message_ids
                     and not state.protected_url_keys
                     and self._chats.get(chat_id) is state
                 ):

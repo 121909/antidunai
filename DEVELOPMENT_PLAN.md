@@ -134,6 +134,7 @@ BURST_GUARD_TARGETS=123456789,@example_user
 BURST_GUARD_WINDOW_SIZE=10
 BURST_GUARD_THRESHOLD=3
 BURST_GUARD_VIDEO_DOMAINS=youtube.com,youtu.be,bilibili.com,douyin.com,tiktok.com
+BURST_GUARD_PARSER_SENDER_IDS=7947627028
 BURST_GUARD_DELETE_BATCH_SIZE=100
 BURST_GUARD_DELETE_RETRY_LIMIT=3
 BURST_GUARD_IDEMPOTENCY_TTL_SECONDS=3600
@@ -150,6 +151,7 @@ BURST_GUARD_HEALTH_PORT=8080
 - `TELEGRAM_SESSION_PATH` 必须指向有效的专用用户账号会话文件。
 - `BURST_GUARD_CHAT_IDS` 至少包含一个群组 ID。
 - `BURST_GUARD_TARGETS` 至少包含一个用户 ID 或用户名。
+- `BURST_GUARD_PARSER_SENDER_IDS` 只接受逗号分隔的正整数发送者 ID。
 - 用户 ID 优先；用户名去掉前导 `@` 后按大小写不敏感比较。
 - `BURST_GUARD_WINDOW_SIZE >= BURST_GUARD_THRESHOLD >= 1`；旧的 `BURST_GUARD_GROUP_SIZE` 兼容。
 - 域名统一转成小写，移除端口和末尾的点。
@@ -202,7 +204,8 @@ host ends with "." + configured_domain
 
 - 指定用户的 `video` 和 `video_note` 直接命中候选。
 - 指定用户的 `document.mime_type` 以 `video/` 开头时命中候选。
-- 非目标发送者的视频媒体本身不进入目标用户窗口，但携带原链接时可作为解析输出参与关联，不依赖发送者的 `bot` 标志。
+- 非目标发送者的视频媒体本身不进入目标用户窗口，但携带回复关系或原链接时可作为解析输出参与关联，不依赖发送者的 `bot` 标志。
+- 配置解析发送者没有可识别原链接且未回复源消息的视频，按发送顺序与尚未匹配的目标链接消息关联；回复消息 ID 和 `Source` 原链接的优先级更高。
 - 不根据文件名扩展名猜测 MIME 类型，也不读取或下载文件内容。
 
 ### 7.3 纯函数接口
@@ -250,7 +253,7 @@ CleanupRequest
 - Telegram 网络请求全部放到锁外执行。
 - 每个目标窗口最多保存 `X` 条消息 ID 和当前候选索引。
 - 使用有过期时间的消息 ID 集合处理重复更新，保证幂等。
-- 使用有过期时间的规范化原链接索引关联解析服务视频；输出先到时暂存消息 ID，淘汰后到达时立即返回清理请求。
+- 使用有过期时间的回复消息 ID、规范化原链接索引和解析发送者 FIFO 关联视频；源消息被发送者删除不影响内存记录，输出先到时暂存消息 ID，淘汰后到达时立即返回清理请求。
 - 清理空闲群组状态和过期幂等记录，避免长期运行后内存持续增长。
 - 随机源通过构造参数注入；生产使用系统随机源，测试使用固定随机源。
 
@@ -259,7 +262,7 @@ CleanupRequest
 对每条新群消息按以下顺序处理：
 
 1. 检查功能开关和群组白名单。
-2. 排除私聊、频道、服务消息和自动化账号自己的消息；非目标视频携带配置域名 URL 时进入解析输出关联分支且不更新目标窗口。
+2. 排除私聊、频道、服务消息和自动化账号自己的消息；非目标视频携带回复关系、配置域名 URL，或来自配置解析发送者时，进入解析输出关联分支且不更新目标窗口。
 3. 取得稳定发送者 ID；只有目标用户消息进入对应窗口。
 4. 检查消息 ID 是否已经处理。
 5. 判断发送者是否为目标用户。

@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     )
     threshold: int = Field(default=3, validation_alias="BURST_GUARD_THRESHOLD", ge=1)
     video_domains: CsvSet = Field(default=frozenset(), validation_alias="BURST_GUARD_VIDEO_DOMAINS")
+    parser_sender_ids: CsvIntSet = Field(
+        default=frozenset(), validation_alias="BURST_GUARD_PARSER_SENDER_IDS"
+    )
     delete_batch_size: int = Field(
         default=100,
         validation_alias="BURST_GUARD_DELETE_BATCH_SIZE",
@@ -96,6 +99,17 @@ class Settings(BaseSettings):
             raise ValueError("chat IDs must be comma-separated integers") from exc
         if not result:
             raise ValueError("at least one chat ID is required")
+        return result
+
+    @field_validator("parser_sender_ids", mode="before")
+    @classmethod
+    def parse_parser_sender_ids(cls, value: Any) -> frozenset[int]:
+        try:
+            result = frozenset(int(item) for item in _csv(value))
+        except ValueError as exc:
+            raise ValueError("parser sender IDs must be comma-separated integers") from exc
+        if any(sender_id <= 0 for sender_id in result):
+            raise ValueError("parser sender IDs must be positive")
         return result
 
     @field_validator("targets", mode="before")

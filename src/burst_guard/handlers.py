@@ -44,11 +44,18 @@ def to_incoming_message(event: Any, sender: Any) -> IncomingMessage:
     if not isinstance(sender_id, int) or sender_id <= 0:
         sender_id = None
     username = getattr(sender, "username", None)
+    reply_to_message_id = getattr(message, "reply_to_msg_id", None)
+    if reply_to_message_id is None:
+        reply_to = getattr(message, "reply_to", None)
+        reply_to_message_id = getattr(reply_to, "reply_to_msg_id", None)
+    if not isinstance(reply_to_message_id, int) or reply_to_message_id <= 0:
+        reply_to_message_id = None
     return IncomingMessage(
         chat_id=int(event.chat_id),
         message_id=int(message.id),
         sender_id=sender_id,
         sender_username=str(username) if username else None,
+        reply_to_message_id=reply_to_message_id,
         text=getattr(message, "message", None),
         entity_urls=_entity_urls(message),
         has_video=getattr(message, "video", None) is not None,
@@ -91,13 +98,21 @@ class TelegramUpdateHandler:
         if incoming.sender_id == self._settings.telegram_expected_user_id:
             return
         target_key = self._settings.target_key(incoming.sender_id, incoming.sender_username)
+        is_parser_sender = incoming.sender_id in self._settings.parser_sender_ids
         if getattr(sender, "bot", False):
-            await self._handle_parser_output(incoming)
+            await self._handle_parser_output(
+                incoming,
+                use_next_link_source=is_parser_sender,
+            )
             return
-        if target_key is None and has_video_media(incoming):
+        if (target_key is None or is_parser_sender) and has_video_media(incoming):
             parser_url_keys = candidate_url_keys(incoming, self._settings.video_domains)
-            if parser_url_keys:
-                await self._handle_parser_output(incoming, parser_url_keys)
+            if parser_url_keys or incoming.reply_to_message_id is not None or is_parser_sender:
+                await self._handle_parser_output(
+                    incoming,
+                    parser_url_keys,
+                    use_next_link_source=is_parser_sender,
+                )
                 return
         self._metrics.increment("group_messages_received")
 
@@ -142,18 +157,22 @@ class TelegramUpdateHandler:
         self,
         incoming: IncomingMessage,
         url_keys: frozenset[str] | None = None,
+        *,
+        use_next_link_source: bool = False,
     ) -> None:
         if not has_video_media(incoming):
             return
         if url_keys is None:
             url_keys = candidate_url_keys(incoming, self._settings.video_domains)
-        if not url_keys:
+        if not url_keys and incoming.reply_to_message_id is None and not use_next_link_source:
             return
         self._metrics.increment("parser_outputs_received")
         result = await self._state.process_parser_output(
             chat_id=incoming.chat_id,
             message_id=incoming.message_id,
             url_keys=url_keys,
+            reply_to_message_id=incoming.reply_to_message_id,
+            use_next_link_source=use_next_link_source,
         )
         if result.duplicate:
             self._metrics.increment("duplicate_updates")

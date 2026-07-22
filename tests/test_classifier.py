@@ -109,5 +109,23 @@ def test_candidate_url_keys_only_include_configured_video_domains() -> None:
     )
 
     assert candidate_url_keys(incoming, frozenset({"youtube.com"})) == frozenset(
-        {"youtube.com/watch?v=1", "m.youtube.com/watch?v=2"}
+        {
+            "youtube.com/watch?v=1",
+            "youtube.com/watch?v=2",
+            "platform:youtube:1",
+            "platform:youtube:2",
+        }
+    )
+
+
+def test_bilibili_source_url_matches_original_despite_share_parameters() -> None:
+    domains = frozenset({"bilibili.com"})
+    original = message(text="https://www.bilibili.com/video/BV123?spm_id_from=x&vd_source=y")
+    source = message(entity_urls=("https://m.bilibili.com/video/BV123?p=1",))
+
+    original_keys = candidate_url_keys(original, domains)
+    source_keys = candidate_url_keys(source, domains)
+
+    assert original_keys & source_keys == frozenset(
+        {"bilibili.com/video/BV123", "platform:bilibili:bv123"}
     )

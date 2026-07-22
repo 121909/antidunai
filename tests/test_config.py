@@ -15,12 +15,14 @@ def test_csv_values_are_normalized(settings_factory: Callable[..., Settings]) ->
         chat_ids=" -1002, -1001,-1001 ",
         targets="101, @Video_User,video_user",
         video_domains="YouTube.COM.,例子.测试,YouTube.com:443",
+        parser_sender_ids="7947627028, 7947627028",
     )
 
     assert settings.chat_ids == frozenset({-1001, -1002})
     assert settings.target_user_ids == frozenset({101})
     assert settings.target_usernames == frozenset({"video_user"})
     assert settings.video_domains == frozenset({"youtube.com", "xn--fsqu00a.xn--0zwm56d"})
+    assert settings.parser_sender_ids == frozenset({7947627028})
     assert settings.group_size == 10
     assert settings.threshold == 3
     assert settings.enabled is True
@@ -50,6 +52,7 @@ def test_target_matching_prefers_stable_user_id(
         ("targets", ""),
         ("targets", "bad-user!"),
         ("video_domains", "https://youtube.com/watch"),
+        ("parser_sender_ids", "0"),
         ("log_level", "verbose"),
     ],
 )
