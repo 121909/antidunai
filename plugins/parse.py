@@ -1,6 +1,7 @@
 import asyncio
 import os
 from collections.abc import Awaitable, Callable, Sequence
+from contextvars import ContextVar
 from itertools import batched
 from typing import Any, BinaryIO, Literal, cast
 
@@ -36,6 +37,7 @@ from core import bs
 from db import get_session
 from i18n import t_
 from log import logger
+from plugins.burst_guard import burst_guard, delete_burst_messages
 from plugins.filters import forwarded_from_bot_filter, platform_filter, via_me_filter
 from plugins.helpers import (
     ProcessedMedia,
@@ -46,6 +48,7 @@ from plugins.helpers import (
 )
 from repo.user_settings import UserConfig
 from services import AccountService, ParseService
+from services.burst_guard import OutputTracker
 from services.cache import CacheEntry, CacheMedia, CacheMediaType, CacheParseResult, parse_cache, persistent_cache
 from services.pipeline import ParsePipeline, PipelineResult, StatusReporter
 from utils.helpers import pack_dir_to_tar_gz, to_list, with_request_id
@@ -55,6 +58,45 @@ logger = logger.bind(name="Parse")
 SKIP_DOWNLOAD_THRESHOLD = 0
 GIF_ONLY_SKIP_DOWNLOAD_COUNT_THRESHOLD = 5
 MAX_RETRIES = 5
+
+_output_tracker: ContextVar[OutputTracker | None] = ContextVar("parse_output_tracker", default=None)
+_GROUP_CHAT_TYPES = frozenset({enums.ChatType.GROUP, enums.ChatType.SUPERGROUP})
+
+
+async def _create_output_tracker(client: Client, message: Message) -> OutputTracker | None:
+    chat = message.chat
+    if not bs.burst_guard_enabled or chat is None or chat.type not in _GROUP_CHAT_TYPES:
+        return None
+    chat_id = chat.id
+    source_message_id = message.id
+    if chat_id is None or source_message_id is None:
+        return None
+
+    async def delete_messages(tracked_chat_id: int, message_ids: tuple[int, ...]) -> None:
+        await delete_burst_messages(client, tracked_chat_id, message_ids)
+
+    return await burst_guard.candidate_output_tracker(chat_id, source_message_id, delete_messages)
+
+
+def _sent_message_ids(sent: Any) -> tuple[int, ...]:
+    if sent is None:
+        return ()
+    if isinstance(sent, Sequence) and not isinstance(sent, (str, bytes)):
+        possible_ids = [getattr(message, "id", None) for message in sent]
+    else:
+        possible_ids = [getattr(sent, "id", None)]
+    return tuple(message_id for message_id in possible_ids if isinstance(message_id, int))
+
+
+async def _track_output[T](sent: T) -> T:
+    tracker = _output_tracker.get()
+    if tracker is not None and (message_ids := _sent_message_ids(sent)):
+        await tracker.track(message_ids)
+    return sent
+
+
+async def _send_tracked[T](send_coro_fn: Callable[[], Awaitable[T]]) -> T:
+    return await _track_output(await _send_with_rate_limit(send_coro_fn))
 
 
 def _media_input(media: str | BinaryIO | None) -> str | BinaryIO:
@@ -123,7 +165,7 @@ class MessageStatusReporter(StatusReporter):
     async def _edit_text(self, text: str, **kwargs: Any) -> None:
         try:
             if self._msg is None:
-                self._msg = await self._user_msg.reply_text(text, **kwargs)
+                self._msg = await _track_output(await self._user_msg.reply_text(text, **kwargs))
             else:
                 if self._msg.text != text:
                     await self._msg.edit_text(text, **kwargs)
@@ -141,6 +183,26 @@ class MessageStatusReporter(StatusReporter):
     | ((filters.text | filters.caption) & ~via_me_filter & platform_filter(True) & ~forwarded_from_bot_filter)
 )
 async def jx(cli: Client, msg: Message) -> None:
+    tracker = await _create_output_tracker(cli, msg)
+    context_token = _output_tracker.set(tracker)
+    try:
+        await _process_message(cli, msg)
+    except asyncio.CancelledError:
+        current_task = asyncio.current_task()
+        if current_task is not None and current_task.cancelling():
+            raise
+        logger.info(
+            "候选解析任务已取消: chat_id={}, message_id={}",
+            msg.chat.id if msg.chat else None,
+            msg.id,
+        )
+    finally:
+        if tracker is not None and msg.chat is not None and msg.chat.id is not None and msg.id is not None:
+            await burst_guard.finish_processing(msg.chat.id, msg.id)
+        _output_tracker.reset(context_token)
+
+
+async def _process_message(cli: Client, msg: Message) -> None:
     mode = "preview"
     bypass_cache = False
     lang = None
@@ -171,7 +233,7 @@ async def jx(cli: Client, msg: Message) -> None:
         if not text and msg.reply_to_message:
             text = msg.reply_to_message.text or msg.reply_to_message.caption or ""
         if not text:
-            await msg.reply_text(_t("**▎请加上链接或回复一条消息**"))
+            await _track_output(await msg.reply_text(_t("**▎请加上链接或回复一条消息**")))
             return
     else:
         text = msg.text or msg.caption or ""
@@ -180,23 +242,34 @@ async def jx(cli: Client, msg: Message) -> None:
     urls = list({i for i in tokens if ParseService().parser.get_platform(i)})[:10]
 
     if not urls:
-        await msg.reply_text(_t("**▎不支持的平台**"))
+        await _track_output(await msg.reply_text(_t("**▎不支持的平台**")))
         return
 
-    tasks = [
-        _handle_parse_request(
-            cli,
-            msg,
-            url=url,
-            mode=mode,
-            delete_share_url_msg=user_config.auto_delete_url,
-            bypass_cache=bypass_cache,
-            _t=_t,
-            user_config=user_config,
+    tasks: list[asyncio.Future[None]] = [
+        asyncio.ensure_future(
+            _handle_parse_request(
+                cli,
+                msg,
+                url=url,
+                mode=mode,
+                delete_share_url_msg=user_config.auto_delete_url,
+                bypass_cache=bypass_cache,
+                _t=_t,
+                user_config=user_config,
+            )
         )
         for url in urls
     ]
-    await asyncio.gather(*tasks)
+    tracker = _output_tracker.get()
+    if tracker is not None and msg.chat is not None and msg.chat.id is not None and msg.id is not None:
+        for task in tasks:
+            await burst_guard.attach_task(msg.chat.id, msg.id, task)
+    try:
+        await asyncio.gather(*tasks)
+    finally:
+        if tracker is not None and msg.chat is not None and msg.chat.id is not None and msg.id is not None:
+            for task in tasks:
+                await burst_guard.detach_task(msg.chat.id, msg.id, task)
 
 
 # ── 主流程 ───────────────────────────────────────────────────────────
@@ -242,7 +315,9 @@ async def _handle_parse_request(
                     "以免触发 Telegram API 全局速率限制\n\n"
                     "**开源地址: [GitHub](https://github.com/z-mio/parse_hub_bot)**"
                 )
-            msg = await msg.reply_text(text, link_preview_options=LinkPreviewOptions(is_disabled=True))
+            msg = await _track_output(
+                await msg.reply_text(text, link_preview_options=LinkPreviewOptions(is_disabled=True))
+            )
 
             async def fn(retry_after: float) -> None:
                 await asyncio.sleep(retry_after)
@@ -346,7 +421,7 @@ async def handle_parse(
             ph_url = await create_richtext_telegraph(cli, parse_result)
             logger.debug(f"Telegraph 页面创建完成: {ph_url}")
             caption = build_caption(parse_result, ph_url, hide_source=user_config.hide_source)
-            await _send_with_rate_limit(
+            await _send_tracked(
                 lambda: msg.reply_text(
                     caption,
                     link_preview_options=LinkPreviewOptions(show_above_text=True),
@@ -365,7 +440,7 @@ async def handle_parse(
         caption = build_caption(parse_result, hide_source=user_config.hide_source)
         gif_only = all(isinstance(i, AniRef) for i in to_list(parse_result.media))
         if mode == "preview" and gif_only and len(to_list(parse_result.media)) > GIF_ONLY_SKIP_DOWNLOAD_COUNT_THRESHOLD:
-            await _send_with_rate_limit(
+            await _send_tracked(
                 lambda: msg.reply_text(
                     caption,
                     reply_markup=_build_gif_button(to_list(parse_result.media)),
@@ -378,7 +453,7 @@ async def handle_parse(
         if not result.processed_list:
             logger.debug("无媒体文件, 仅发送文本")
             await msg.reply_chat_action(enums.ChatAction.TYPING)
-            await _send_with_rate_limit(
+            await _send_tracked(
                 lambda: msg.reply_text(
                     caption,
                     link_preview_options=LinkPreviewOptions(is_disabled=True),
@@ -527,11 +602,11 @@ async def _send_raw(
         if len(docs + gifs) == 1:
             all_docs = docs + gifs
             await msg.reply_chat_action(enums.ChatAction.UPLOAD_DOCUMENT)
-            sent_msg = await _send_with_rate_limit(
+            sent_msg = await _send_tracked(
                 lambda: msg.reply_document(_media_input(all_docs[0].media), caption=caption, force_document=True)
             )
             if livephoto_videos and sent_msg:
-                await _send_with_rate_limit(
+                await _send_tracked(
                     lambda: sent_msg.reply_document(_media_input(livephoto_videos[0].media), force_document=True)
                 )
         else:
@@ -539,23 +614,23 @@ async def _send_raw(
             for batch in batched(docs, 10):
                 await msg.reply_chat_action(enums.ChatAction.UPLOAD_DOCUMENT)
                 # noinspection PyDefaultArgument
-                mg = await _send_with_rate_limit(lambda b=list(batch): msg.reply_media_group(b))  # type: ignore
+                mg = await _send_tracked(lambda b=list(batch): msg.reply_media_group(b))  # type: ignore
                 msgs.extend(mg)
             if livephoto_videos:
                 for idx, media_doc in livephoto_videos.items():
                     await msg.reply_chat_action(enums.ChatAction.UPLOAD_DOCUMENT)
-                    await _send_with_rate_limit(
+                    await _send_tracked(
                         lambda m_=media_doc, idx_=idx: msgs[idx_].reply_document(  # type: ignore
                             _media_input(m_.media), force_document=True
                         )
                     )
             if gifs:
-                await _send_with_rate_limit(
+                await _send_tracked(
                     lambda: msg.reply_text(
                         _t("**▎GIF 下载链接**"), reply_markup=_build_gif_button(to_list(result.parse_result.media))
                     )
                 )
-            await _send_with_rate_limit(
+            await _send_tracked(
                 lambda: msg.reply_text(
                     caption,
                     link_preview_options=LinkPreviewOptions(is_disabled=True),
@@ -599,7 +674,7 @@ async def _send_zip(
     await reporter.report(_t("上 传 中..."))
     try:
         await msg.reply_chat_action(enums.ChatAction.UPLOAD_DOCUMENT)
-        await _send_with_rate_limit(lambda: msg.reply_document(str(pack_path), caption=caption))
+        await _send_tracked(lambda: msg.reply_document(str(pack_path), caption=caption))
     except Exception as e:
         logger.opt(exception=e).debug("详细堆栈")
         logger.error(f"上传失败: {e}")
@@ -632,7 +707,7 @@ async def _send_single(
         sent: Message | None = None
         if animations:
             await msg.reply_chat_action(enums.ChatAction.UPLOAD_PHOTO)
-            sent = await _send_with_rate_limit(
+            sent = await _send_tracked(
                 lambda: msg.reply_animation(_media_input(animations[0].media), caption=caption)
             )
         else:
@@ -640,13 +715,13 @@ async def _send_single(
             match single:
                 case InputMediaPhoto():
                     await msg.reply_chat_action(enums.ChatAction.UPLOAD_PHOTO)
-                    sent = await _send_with_rate_limit(
+                    sent = await _send_tracked(
                         lambda: msg.reply_photo(_media_input(single.media), caption=caption)
                     )
                 case InputMediaVideo():
                     await msg.reply_chat_action(enums.ChatAction.UPLOAD_VIDEO)
                     try:
-                        sent = await _send_with_rate_limit(
+                        sent = await _send_tracked(
                             lambda: msg.reply_video(
                                 _media_input(single.media),
                                 caption=caption,
@@ -659,7 +734,7 @@ async def _send_single(
                         )
                     except (WebpageCurlFailed, WebpageMediaEmpty):
                         logger.warning("Tg 获取封面失败, 移除封面上传")
-                        sent = await _send_with_rate_limit(
+                        sent = await _send_tracked(
                             lambda: msg.reply_video(
                                 _media_input(single.media),
                                 caption=caption,
@@ -675,7 +750,7 @@ async def _send_single(
     except Exception as e:
         logger.warning(f"上传失败 {e}, 使用兼容模式上传")
         await msg.reply_chat_action(enums.ChatAction.UPLOAD_DOCUMENT)
-        await _send_with_rate_limit(
+        await _send_tracked(
             lambda: msg.reply_document(_media_input(all_media[0].media), caption=caption, force_document=True)
         )
         return None
@@ -709,7 +784,7 @@ async def _send_multi(
     not_cache = False
     if len([i for i in media_refs if isinstance(i, AniRef)]) > GIF_ONLY_SKIP_DOWNLOAD_COUNT_THRESHOLD:
         not_cache = True
-        await _send_with_rate_limit(
+        await _send_tracked(
             lambda: msg.reply_text(_t("**▎GIF 过多跳过上传, 请自行下载**"), reply_markup=_build_gif_button(media_refs))
         )
     else:
@@ -717,7 +792,7 @@ async def _send_multi(
             await msg.reply_chat_action(enums.ChatAction.UPLOAD_PHOTO)
             caption_ = caption if ani == animations[-1] and not photos_videos else ""
             try:
-                sent = await _send_with_rate_limit(
+                sent = await _send_tracked(
                     lambda a=ani, c=caption_: msg.reply_animation(  # type: ignore[misc]
                         _media_input(a.media),
                         caption=c,
@@ -727,7 +802,7 @@ async def _send_multi(
                 logger.warning(f"上传失败 {e}, 使用兼容模式上传")
                 not_cache = True
                 await msg.reply_chat_action(enums.ChatAction.UPLOAD_DOCUMENT)
-                await _send_with_rate_limit(
+                await _send_tracked(
                     lambda a=ani, c=caption_: msg.reply_document(_media_input(a.media), caption=c, force_document=True)  # type: ignore[misc]
                 )
             else:
@@ -744,7 +819,7 @@ async def _send_multi(
 
             await msg.reply_chat_action(enums.ChatAction.UPLOAD_PHOTO)
             # noinspection PyDefaultArgument
-            sent_msgs = await _send_with_rate_limit(lambda b=list(batch): msg.reply_media_group(media=b))  # type: ignore[misc]
+            sent_msgs = await _send_tracked(lambda b=list(batch): msg.reply_media_group(media=b))  # type: ignore[misc]
             for m in sent_msgs:
                 if cm := _cache_media_from_message(m):
                     media_list.append(cm)
@@ -759,7 +834,7 @@ async def _send_multi(
 
             await msg.reply_chat_action(enums.ChatAction.UPLOAD_DOCUMENT)
             # noinspection PyDefaultArgument
-            await _send_with_rate_limit(lambda b=list(document_batch): msg.reply_media_group(media=b))  # type: ignore
+            await _send_tracked(lambda b=list(document_batch): msg.reply_media_group(media=b))  # type: ignore
         return None
 
     return None if not_cache else media_list
@@ -809,16 +884,20 @@ async def _send_cached(msg: Message, entry: CacheEntry, url: str, *, user_config
 
     # 富文本类型
     if entry.telegraph_url:
-        await msg.reply_text(
-            caption,
-            link_preview_options=LinkPreviewOptions(show_above_text=True),
+        await _track_output(
+            await msg.reply_text(
+                caption,
+                link_preview_options=LinkPreviewOptions(show_above_text=True),
+            )
         )
         return
 
     if not entry.media:
-        await msg.reply_text(
-            caption,
-            link_preview_options=LinkPreviewOptions(is_disabled=True),
+        await _track_output(
+            await msg.reply_text(
+                caption,
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
+            )
         )
         return
 
@@ -833,20 +912,20 @@ async def _send_cached_single(msg: Message, m: CacheMedia, caption: str) -> None
     match m.type:
         case CacheMediaType.PHOTO:
             await msg.reply_chat_action(enums.ChatAction.UPLOAD_PHOTO)
-            await _send_with_rate_limit(lambda: msg.reply_photo(m.file_id, caption=caption))
+            await _send_tracked(lambda: msg.reply_photo(m.file_id, caption=caption))
         case CacheMediaType.VIDEO:
             await msg.reply_chat_action(enums.ChatAction.UPLOAD_VIDEO)
-            await _send_with_rate_limit(
+            await _send_tracked(
                 lambda: msg.reply_video(
                     m.file_id, caption=caption, supports_streaming=True, video_cover=m.cover_file_id
                 )
             )
         case CacheMediaType.ANIMATION:
             await msg.reply_chat_action(enums.ChatAction.UPLOAD_PHOTO)
-            await _send_with_rate_limit(lambda: msg.reply_animation(m.file_id, caption=caption))
+            await _send_tracked(lambda: msg.reply_animation(m.file_id, caption=caption))
         case CacheMediaType.DOCUMENT:
             await msg.reply_chat_action(enums.ChatAction.UPLOAD_DOCUMENT)
-            await _send_with_rate_limit(lambda: msg.reply_document(m.file_id, caption=caption, force_document=True))
+            await _send_tracked(lambda: msg.reply_document(m.file_id, caption=caption, force_document=True))
 
 
 async def _send_cached_multi(msg: Message, media: list[CacheMedia], caption: str) -> None:
@@ -856,7 +935,7 @@ async def _send_cached_multi(msg: Message, media: list[CacheMedia], caption: str
 
     for ani in animations:
         await msg.reply_chat_action(enums.ChatAction.UPLOAD_PHOTO)
-        await _send_with_rate_limit(
+        await _send_tracked(
             lambda a=ani: msg.reply_animation(  # type: ignore[misc]
                 a.file_id,
                 caption=caption if a == animations[-1] and not others else "",
@@ -870,7 +949,7 @@ async def _send_cached_multi(msg: Message, media: list[CacheMedia], caption: str
 
         await msg.reply_chat_action(enums.ChatAction.UPLOAD_PHOTO)
         # noinspection PyDefaultArgument
-        await _send_with_rate_limit(lambda m=list(batch): msg.reply_media_group(m))  # type: ignore[misc]
+        await _send_tracked(lambda m=list(batch): msg.reply_media_group(m))  # type: ignore[misc]
 
 
 def _build_cached_media_group(

@@ -1,5 +1,6 @@
 import asyncio
 import shutil
+import tempfile
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -107,6 +108,7 @@ class ParsePipeline:
         self._save_metadata = save_metadata
         self._t = _t
         self._result: PipelineResult | None = None
+        self._download_root: Path | None = None
         self._owns_inflight = False
 
     def __enter__(self) -> "ParsePipeline":
@@ -136,9 +138,12 @@ class ParsePipeline:
         self._owns_inflight = False
 
     def cleanup(self) -> None:
-        """清理流水线输出资源"""
+        """清理流水线输出资源，包括取消期间产生的部分下载。"""
         if self._result is not None:
             self._result.cleanup()
+        if self._download_root is not None and not bs.debug_skip_cleanup:
+            shutil.rmtree(self._download_root, ignore_errors=True)
+            self._download_root = None
 
     async def run(self) -> PipelineResult | None:
         """执行流水线，返回 PipelineResult 或 None（失败时已通知）"""
@@ -207,12 +212,19 @@ class ParsePipeline:
         await self._reporter.report(self._t("下 载 中..."))
         p = ps.parser.get_platform(self._url)
         progress_cb = PipelineProgressCallback(self._reporter, _t=self._t)
+        bs.download_dir.mkdir(parents=True, exist_ok=True)
+        download_root = Path(tempfile.mkdtemp(prefix="parse-", dir=bs.download_dir))
+        self._download_root = download_root
 
         async def fn() -> DownloadResult:
             proxy = pl_cfg.roll_downloader_proxy(p.id)
             logger.debug(f"使用配置: proxy={proxy}")
             return await parse_result.download(
-                bs.download_dir, callback=progress_cb, callback_args=(), proxy=proxy, save_metadata=self._save_metadata
+                download_root,
+                callback=progress_cb,
+                callback_args=(),
+                proxy=proxy,
+                save_metadata=self._save_metadata,
             )
 
         download_result: DownloadResult = await self._step(

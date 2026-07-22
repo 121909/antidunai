@@ -26,8 +26,9 @@ class BurstItem:
     source_message_id: int
     status: BurstItemStatus = BurstItemStatus.PENDING
     output_message_ids: set[int] = field(default_factory=set)
-    tasks: set[asyncio.Task[Any]] = field(default_factory=set)
+    tasks: set[asyncio.Future[Any]] = field(default_factory=set)
     processing_complete: bool = False
+    cleanup_complete: bool = False
 
 
 @dataclass(slots=True)
@@ -46,7 +47,7 @@ class BurstCleanup:
     chat_id: int
     source_message_id: int
     message_ids: tuple[int, ...]
-    tasks: tuple[asyncio.Task[Any], ...]
+    tasks: tuple[asyncio.Future[Any], ...]
 
     @classmethod
     def from_item(cls, item: BurstItem) -> BurstCleanup:
@@ -151,6 +152,21 @@ class BurstGuardService:
     ) -> OutputTracker:
         return OutputTracker(self, chat_id, source_message_id, delete_messages)
 
+    async def candidate_output_tracker(
+        self,
+        chat_id: int,
+        source_message_id: int,
+        delete_messages: DeleteMessages,
+    ) -> OutputTracker | None:
+        item_key = (chat_id, source_message_id)
+        if item_key not in self._items:
+            return None
+        lock = self._lock_for(chat_id)
+        async with lock:
+            if item_key not in self._items:
+                return None
+            return OutputTracker(self, chat_id, source_message_id, delete_messages)
+
     async def register_candidate(
         self,
         chat_id: int,
@@ -219,7 +235,8 @@ class BurstGuardService:
         message_ids: Iterable[int],
     ) -> OutputRegistration:
         incoming = tuple(dict.fromkeys(message_ids))
-        if not incoming:
+        item_key = (chat_id, source_message_id)
+        if not incoming or item_key not in self._items:
             return OutputRegistration(tracked=False, delete_immediately=False)
 
         lock = self._lock_for(chat_id)
@@ -240,7 +257,7 @@ class BurstGuardService:
         self,
         chat_id: int,
         source_message_id: int,
-        task: asyncio.Task[Any],
+        task: asyncio.Future[Any],
     ) -> bool:
         lock = self._lock_for(chat_id)
         async with lock:
@@ -257,7 +274,7 @@ class BurstGuardService:
         self,
         chat_id: int,
         source_message_id: int,
-        task: asyncio.Task[Any],
+        task: asyncio.Future[Any],
     ) -> None:
         lock = self._lock_for(chat_id)
         async with lock:
@@ -274,6 +291,15 @@ class BurstGuardService:
             if item is None:
                 return
             item.processing_complete = True
+            self._prune_item_locked(item)
+
+    async def finish_cleanup(self, chat_id: int, source_message_id: int) -> None:
+        lock = self._lock_for(chat_id)
+        async with lock:
+            item = self._items.get((chat_id, source_message_id))
+            if item is None:
+                return
+            item.cleanup_complete = True
             self._prune_item_locked(item)
 
     async def get_run(self, chat_id: int) -> BurstRunSnapshot | None:
@@ -378,7 +404,7 @@ class BurstGuardService:
         self._prune_run_locked(group, run)
 
     def _prune_item_locked(self, item: BurstItem) -> None:
-        if not item.processing_complete or item.tasks:
+        if not self._can_prune(item):
             return
         group = self._groups.get(item.chat_id)
         if group is None:
@@ -394,8 +420,14 @@ class BurstGuardService:
         if not run.closed:
             return
         for item in tuple(run.items.values()):
-            if item.processing_complete and not item.tasks:
+            if self._can_prune(item):
                 run.items.pop(item.source_message_id, None)
                 self._items.pop((item.chat_id, item.source_message_id), None)
         if not run.items:
             group.runs.pop(run.run_id, None)
+
+    @staticmethod
+    def _can_prune(item: BurstItem) -> bool:
+        if not item.processing_complete or item.tasks:
+            return False
+        return item.status is not BurstItemStatus.EVICTED or item.cleanup_complete

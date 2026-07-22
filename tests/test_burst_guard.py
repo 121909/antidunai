@@ -156,12 +156,16 @@ async def test_task_attached_after_eviction_is_cancelled() -> None:
 
 
 @pytest.mark.asyncio
-async def test_completed_evicted_item_is_released() -> None:
+async def test_completed_evicted_item_is_released_after_cleanup() -> None:
     service = BurstGuardService(rng=FixedRandom(0))
     for message_id in range(1, 4):
         await service.register_candidate(-100, 10, message_id)
 
     await service.finish_processing(-100, 3)
-    registration = await service.record_output(-100, 3, [30])
+    late_output = await service.record_output(-100, 3, [30])
+    await service.finish_cleanup(-100, 3)
+    after_cleanup = await service.record_output(-100, 3, [31])
 
-    assert registration.tracked is False
+    assert late_output.tracked is True
+    assert late_output.delete_immediately is True
+    assert after_cleanup.tracked is False
