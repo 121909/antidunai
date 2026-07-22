@@ -86,7 +86,7 @@ class TelegramUpdateHandler:
 
         target_key = self._settings.target_key(incoming.sender_id, incoming.sender_username)
         url_keys = candidate_url_keys(incoming, self._settings.video_domains)
-        candidate = bool(target_key and url_keys)
+        candidate = bool(target_key and (url_keys or has_video_media(incoming)))
         result = await self._state.process(
             chat_id=incoming.chat_id,
             message_id=incoming.message_id,

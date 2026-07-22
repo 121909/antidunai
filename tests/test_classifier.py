@@ -80,9 +80,18 @@ def test_url_trailing_punctuation_is_ignored() -> None:
         message(document_mime_type="video/mp4"),
     ],
 )
-def test_video_media_is_detected_only_for_parser_output(media: IncomingMessage) -> None:
+def test_video_media_is_detected_independently_from_link_candidates(
+    media: IncomingMessage,
+) -> None:
     assert has_video_media(media)
     assert not is_video_link_candidate(media, frozenset({"youtube.com"}))
+
+
+def test_tiktok_domain_and_subdomains_are_candidates() -> None:
+    domains = frozenset({"tiktok.com"})
+
+    assert is_video_link_candidate(message(text="https://www.tiktok.com/@user/video/123"), domains)
+    assert is_video_link_candidate(message(text="https://vm.tiktok.com/abc"), domains)
 
 
 def test_original_url_key_ignores_presentation_only_differences() -> None:

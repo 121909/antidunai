@@ -116,16 +116,17 @@ async def test_fixed_group_link_cleanup_occurs_outside_state_lock(
 
 
 @pytest.mark.asyncio
-async def test_target_video_file_counts_as_message_but_not_link_candidate(
+async def test_target_video_file_counts_as_candidate(
     settings_factory: Callable[..., Settings],
 ) -> None:
-    handler, state, cleanup, metrics = make_handler(settings_factory(group_size=2, threshold=1))
+    handler, state, cleanup, metrics = make_handler(settings_factory(group_size=3, threshold=2))
 
     await handler(FakeEvent(1, 101, video=True))
     await handler(FakeEvent(2, 999, text="ordinary"))
+    await handler(FakeEvent(3, 101, text="https://youtube.com/3"))
 
-    assert cleanup.requests == []
-    assert metrics.get("candidate_messages") == 0
+    assert [request.message_ids for request in cleanup.requests] == [(3,)]
+    assert metrics.get("candidate_messages") == 2
     assert state.chat_state(-1001).active_run is None
 
 
