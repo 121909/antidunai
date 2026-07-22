@@ -35,6 +35,14 @@ class BotSettings(BaseSettings):
     # chat_id 在 RATE_LIMIT_BURST_WINDOW 秒内达到 RATE_LIMIT_BURST 次解析后，进入 RATE_LIMIT_COOLDOWN 秒冷却期;
     # 冷却期内每 RATE_LIMIT_THROTTLE_WINDOW 秒最多允许 RATE_LIMIT_THROTTLE 次解析.
 
+    burst_guard_enabled: bool = Field(default=False, description="启用群组视频刷屏治理")
+    burst_guard_targets: frozenset[str] = Field(default_factory=frozenset, description="目标用户 ID 或用户名")
+    burst_guard_threshold: int = Field(default=3, ge=3, description="触发治理的连续候选消息数")
+    burst_guard_video_platforms: frozenset[str] = Field(
+        default_factory=frozenset,
+        description="计入治理的视频平台 ID 白名单",
+    )
+
     download_dir: Path = Path("downloads")
 
     database_url: str = Field(default="sqlite+aiosqlite:///data/db/database.db")
@@ -74,6 +82,24 @@ class BotSettings(BaseSettings):
             "username": url.username,
             "password": url.password,
         }
+
+    @field_validator("burst_guard_targets", "burst_guard_video_platforms", mode="before")
+    @classmethod
+    def comma_separated_values(
+        cls,
+        value: str | list[str] | set[str] | frozenset[str] | tuple[str, ...] | None,
+    ) -> frozenset[str]:
+        if value is None:
+            return frozenset()
+        values = value.split(",") if isinstance(value, str) else value
+        return frozenset(item.strip().removeprefix("@").casefold() for item in values if item.strip())
+
+    def is_burst_guard_target(self, user_id: int, username: str | None) -> bool:
+        if str(user_id) in self.burst_guard_targets:
+            return True
+        if not username:
+            return False
+        return username.strip().removeprefix("@").casefold() in self.burst_guard_targets
 
     @property
     def bot_session_name(self) -> str:

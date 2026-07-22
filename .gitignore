@@ -5,3 +5,7 @@
 .env
 *.session
 /data
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/

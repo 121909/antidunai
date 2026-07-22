@@ -110,6 +110,21 @@ BOT_TOKEN=     # 机器人 Token，向 @BotFather 申请
 BOT_PROXY=     # Bot 连接 TG 使用的代理，例：http://127.0.0.1:7890
 ```
 
+### 群组视频刷屏治理
+
+该功能默认关闭，仅在群组和超级群组中生效。启用前，机器人必须是群管理员并具有删除消息权限；同时需关闭 BotFather 隐私模式，或确保管理员身份可以接收完整群消息。
+
+```dotenv
+BURST_GUARD_ENABLED=false
+BURST_GUARD_TARGETS=123456789,@username
+BURST_GUARD_THRESHOLD=3
+BURST_GUARD_VIDEO_PLATFORMS=douyin,bilibili,youtube
+```
+
+`BURST_GUARD_TARGETS` 接受逗号分隔的 Telegram 用户 ID 或用户名，用户名匹配不区分大小写且可带 `@`。优先配置固定用户 ID，因为用户名可能变更或缺失。`BURST_GUARD_THRESHOLD` 最小为 3；平台白名单使用 ParseHub 的平台 ID。对于同时支持视频和图文的平台，首个版本仅按平台识别，建议只加入确认用于视频解析的平台。
+
+机器人重启后内存中的连续段会清空，不追溯历史消息。权限不足时无法删除源消息或解析结果，应先检查群管理员权限和日志。
+
 ### 🌐 平台配置
 
 用于为各解析平台单独配置**代理**和 **Cookie**，位于 `data/config/platform_config.yaml`
