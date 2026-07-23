@@ -12,6 +12,7 @@ from burst_guard.cleanup import CleanupService
 from burst_guard.config import Settings
 from burst_guard.handlers import TelegramUpdateHandler
 from burst_guard.health import HealthServer, HealthState
+from burst_guard.interaction import InfoReplyService
 from burst_guard.logging import configure_logging, log_event
 from burst_guard.metrics import Metrics
 from burst_guard.notifications import SanctionNotifier
@@ -40,6 +41,14 @@ class TelegramMessageAdapter:
         parse_mode: object | None = None,
     ) -> object:
         return await self._client.send_message(entity, message, parse_mode=parse_mode)
+
+    async def send_reply(self, entity: int, message: str, reply_to_message_id: int) -> object:
+        return await self._client.send_message(
+            entity,
+            message,
+            parse_mode=None,
+            reply_to=reply_to_message_id,
+        )
 
 
 async def _state_janitor(state: BurstStateService, interval: float, logger: logging.Logger) -> None:
@@ -71,15 +80,8 @@ async def run_service(settings: Settings) -> None:
         metrics=metrics,
         logger=logger,
     )
-    notifier = SanctionNotifier(TelegramMessageAdapter(client), metrics, logger)
-    handler = TelegramUpdateHandler(
-        settings,
-        state,
-        cleanup,
-        metrics,
-        logger,
-        notifier=notifier,
-    )
+    message_adapter = TelegramMessageAdapter(client)
+    notifier = SanctionNotifier(message_adapter, metrics, logger)
     health_state = HealthState(config_valid=True)
     health = HealthServer(
         settings.health_host, settings.health_port, health_state, client.is_connected
@@ -104,6 +106,26 @@ async def run_service(settings: Settings) -> None:
             await health.start()
             await run_preflight(client, settings, logger)
             health_state.preflight_passed = True
+            me = await client.get_me()
+            account_username = getattr(me, "username", None)
+            info_reply = InfoReplyService(
+                settings.telegram_expected_user_id,
+                str(account_username) if account_username else None,
+                metrics,
+                logger,
+                enabled=settings.info_reply_enabled,
+                cooldown_seconds=settings.info_reply_cooldown_seconds,
+            )
+            handler = TelegramUpdateHandler(
+                settings,
+                state,
+                cleanup,
+                metrics,
+                logger,
+                notifier=notifier,
+                info_reply=info_reply,
+                reply_sender=message_adapter.send_reply,
+            )
             client.add_event_handler(handler, events.NewMessage(chats=list(settings.chat_ids)))
             health_state.listener_running = True
             janitor = asyncio.create_task(

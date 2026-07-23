@@ -6,6 +6,7 @@ from typing import Any
 from burst_guard.classifier import candidate_url_keys, has_video_media
 from burst_guard.cleanup import CleanupService
 from burst_guard.config import Settings
+from burst_guard.interaction import InfoReplyService, ReplySender
 from burst_guard.logging import log_event
 from burst_guard.metrics import Metrics
 from burst_guard.models import IncomingMessage
@@ -77,6 +78,8 @@ class TelegramUpdateHandler:
         logger: logging.Logger,
         *,
         notifier: SanctionNotifier | None = None,
+        info_reply: InfoReplyService | None = None,
+        reply_sender: ReplySender | None = None,
     ) -> None:
         self._settings = settings
         self._state = state
@@ -84,6 +87,8 @@ class TelegramUpdateHandler:
         self._metrics = metrics
         self._logger = logger
         self._notifier = notifier
+        self._info_reply = info_reply
+        self._reply_sender = reply_sender
 
     async def __call__(self, event: Any) -> None:
         if not self._settings.enabled:
@@ -111,6 +116,8 @@ class TelegramUpdateHandler:
                 use_next_link_source=is_parser_sender,
             )
             return
+        if not is_parser_sender and self._info_reply is not None and self._reply_sender is not None:
+            await self._info_reply.maybe_reply(event, incoming, self._reply_sender)
         if (target_key is None or is_parser_sender) and has_video_media(incoming):
             parser_url_keys = candidate_url_keys(incoming, self._settings.video_domains)
             if parser_url_keys or incoming.reply_to_message_id is not None or is_parser_sender:

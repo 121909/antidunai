@@ -27,6 +27,8 @@ def test_csv_values_are_normalized(settings_factory: Callable[..., Settings]) ->
     assert settings.threshold == 3
     assert settings.enabled is True
     assert settings.dry_run is True
+    assert settings.info_reply_enabled is True
+    assert settings.info_reply_cooldown_seconds == 60
 
 
 def test_target_matching_prefers_stable_user_id(
@@ -48,6 +50,8 @@ def test_target_matching_prefers_stable_user_id(
         ("group_size", 0),
         ("delete_batch_size", 0),
         ("delete_batch_size", 101),
+        ("info_reply_cooldown_seconds", 9),
+        ("info_reply_cooldown_seconds", 86401),
         ("chat_ids", ""),
         ("targets", ""),
         ("targets", "bad-user!"),

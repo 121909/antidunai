@@ -60,6 +60,15 @@ class Settings(BaseSettings):
 
     enabled: bool = Field(default=False, validation_alias="BURST_GUARD_ENABLED")
     dry_run: bool = Field(default=True, validation_alias="BURST_GUARD_DRY_RUN")
+    info_reply_enabled: bool = Field(
+        default=True, validation_alias="BURST_GUARD_INFO_REPLY_ENABLED"
+    )
+    info_reply_cooldown_seconds: int = Field(
+        default=60,
+        validation_alias="BURST_GUARD_INFO_REPLY_COOLDOWN_SECONDS",
+        ge=10,
+        le=86400,
+    )
     chat_ids: CsvIntSet = Field(validation_alias="BURST_GUARD_CHAT_IDS", min_length=1)
     targets: CsvSet = Field(validation_alias="BURST_GUARD_TARGETS", min_length=1)
     group_size: int = Field(

@@ -10,6 +10,7 @@
 - 目标用户普通文本占用该用户窗口位置；其他用户、匿名管理员和机器人消息不进入该目标用户窗口。
 - 窗口始终只保留该目标用户最新的 `X` 条消息。候选达到 `Y` 条时立即随机保留 1 条，后续消息继续滚动窗口。
 - 阈值清理至少成功删除一条消息后，服务在群内发送“检测到 @用户名 正在发送垃圾视频，已制裁，今日共制裁 x 次”；次数按群组和目标用户分别统计，并在 UTC 日期变化时归零。
+- 在受管群内被有效 `@` 或收到对 userbot 消息的直接回复时，服务只回复“本机器人仅治理 @Dunai_233 滥发视频现象，无其他任何功能”；同一群组默认 60 秒内最多回复一次。
 - 机器人和 Telegram 服务消息不会触发窗口更新。解析视频优先按回复消息、`Source` 原链接关联；来自 `BURST_GUARD_PARSER_SENDER_IDS`、没有可识别原链接且未回复源消息的视频，则按发送顺序关联目标用户尚未匹配的链接消息。
 - 不同群组的状态完全隔离，进程重启后不恢复状态。
 
@@ -74,6 +75,7 @@ GET /health/ready
 - `BURST_GUARD_TARGETS` 接受正整数用户 ID 或用户名。生产环境优先使用稳定的数字 ID。
 - `BURST_GUARD_WINDOW_SIZE` 是每个目标用户的滚动消息窗口大小 `X`；旧配置名 `BURST_GUARD_GROUP_SIZE` 仍兼容。
 - `BURST_GUARD_THRESHOLD` 是触发随机保留的视频候选消息数 `Y`。
+- `BURST_GUARD_INFO_REPLY_ENABLED` 控制固定说明回应，`BURST_GUARD_INFO_REPLY_COOLDOWN_SECONDS` 设置群组冷却时间（10 到 86400 秒）。
 - `X`、`Y` 都必须为正整数，且 `X >= Y`。
 - `BURST_GUARD_VIDEO_DOMAINS` 仅填写域名，不填写 scheme 或路径；子域名自动匹配，短链接域名必须显式列出。
 - `BURST_GUARD_PARSER_SENDER_IDS` 是解析服务发送者的数字 ID，多个 ID 用逗号分隔；示例配置为 `7947627028`。

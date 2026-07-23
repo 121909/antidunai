@@ -9,6 +9,7 @@ import pytest
 
 from burst_guard.config import Settings
 from burst_guard.handlers import TelegramUpdateHandler, to_incoming_message
+from burst_guard.interaction import INFO_REPLY_TEXT, InfoReplyService
 from burst_guard.metrics import Metrics
 from burst_guard.models import CleanupReport, CleanupRequest
 from burst_guard.state import BurstStateService
@@ -35,6 +36,7 @@ class FakeMessage:
         gif: bool = False,
         sticker: bool = False,
         document_mime_type: str | None = None,
+        mention: str | None = None,
     ) -> None:
         self.id = message_id
         self.video = object() if video else None
@@ -47,7 +49,13 @@ class FakeMessage:
         self.message = text
         self.out = out
         self.action = action
+        self._mention_entity = None
+        if mention is not None:
+            self._mention_entity = type("MessageEntityMention", (), {})()
         self.entities = [SimpleNamespace(url=hidden_url)] if hidden_url else []
+        if self._mention_entity is not None:
+            self.entities.append(self._mention_entity)
+        self._mention = mention
         self.reply_markup = (
             SimpleNamespace(rows=[SimpleNamespace(buttons=[SimpleNamespace(url=button_url)])])
             if button_url
@@ -59,6 +67,8 @@ class FakeMessage:
         self.reply_to_msg_id = reply_to_message_id
 
     def get_entities_text(self) -> list[tuple[object, str]]:
+        if self._mention_entity is not None and self._mention is not None:
+            return [(self._mention_entity, self._mention)]
         return []
 
 
@@ -111,6 +121,15 @@ class FakeNotifier:
     async def notify(self, **values: object) -> bool:
         self.calls.append(values)
         return True
+
+
+class FakeReplySender:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, str, int]] = []
+
+    async def __call__(self, chat_id: int, text: str, reply_to: int) -> object:
+        self.calls.append((chat_id, text, reply_to))
+        return SimpleNamespace(id=800 + len(self.calls))
 
 
 def make_handler(
@@ -213,6 +232,31 @@ async def test_filters_disabled_wrong_chat_private_service_own_and_bot(
     disabled, _, _, disabled_metrics = make_handler(settings_factory(enabled=False))
     await disabled(FakeEvent(6, 101, video=True))
     assert disabled_metrics.snapshot() == {}
+
+
+@pytest.mark.asyncio
+async def test_handler_replies_with_fixed_text_when_account_is_mentioned(
+    settings_factory: Callable[..., Settings],
+) -> None:
+    settings = settings_factory()
+    state = BurstStateService(settings.threshold, 60, group_size=settings.group_size)
+    cleanup = FakeCleanup(state)
+    metrics = Metrics()
+    reply_sender = FakeReplySender()
+    handler = TelegramUpdateHandler(
+        settings,
+        state,
+        cleanup,
+        metrics,
+        logging.getLogger("test-handler"),
+        info_reply=InfoReplyService(9001, "guard_user", metrics, logging.getLogger("test-info")),
+        reply_sender=reply_sender,
+    )
+
+    await handler(FakeEvent(7, 999, text="@guard_user", mention="@guard_user"))
+
+    assert reply_sender.calls == [(-1001, INFO_REPLY_TEXT, 7)]
+    assert metrics.get("info_reply_sent") == 1
 
 
 @pytest.mark.asyncio
