@@ -5,6 +5,7 @@ import pytest
 from burst_guard.classifier import (
     candidate_url_keys,
     canonical_url_key,
+    extract_bilibili_bvids,
     extract_urls,
     has_video_media,
     is_video_link_candidate,
@@ -141,3 +142,45 @@ def test_bilibili_source_url_matches_original_despite_share_parameters() -> None
     assert original_keys & source_keys == frozenset(
         {"bilibili.com/video/BV123", "platform:bilibili:bv123"}
     )
+
+
+def test_bare_bilibili_bvid_is_a_candidate_and_matches_full_url() -> None:
+    domains = frozenset({"bilibili.com"})
+    bare = message(text="推荐 BV1vN7G6uE2Q 可以看看")
+    full = message(text="https://www.bilibili.com/video/BV1vN7G6uE2Q")
+
+    bare_keys = candidate_url_keys(bare, domains)
+    full_keys = candidate_url_keys(full, domains)
+
+    assert bare_keys == frozenset(
+        {
+            "bilibili.com/video/BV1vN7G6uE2Q",
+            "platform:bilibili:bv1vn7g6ue2q",
+        }
+    )
+    assert bare_keys <= full_keys
+    assert is_video_link_candidate(bare, domains)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "BV1vN7G6uE2",
+        "BV1vN7G6uE2Q0",
+        "xBV1vN7G6uE2Q",
+        "BV1vN7G6uE2Qx",
+        "bv1vN7G6uE2Q",
+    ],
+)
+def test_invalid_or_embedded_bvid_is_not_detected(text: str) -> None:
+    incoming = message(text=text)
+
+    assert extract_bilibili_bvids(incoming) == ()
+    assert not is_video_link_candidate(incoming, frozenset({"bilibili.com"}))
+
+
+def test_bare_bvid_requires_bilibili_domain_to_be_enabled() -> None:
+    incoming = message(caption="BV1vN7G6uE2Q")
+
+    assert extract_bilibili_bvids(incoming) == ("BV1vN7G6uE2Q",)
+    assert not is_video_link_candidate(incoming, frozenset({"youtube.com"}))

@@ -6,6 +6,7 @@ from urllib.parse import SplitResult, parse_qsl, urlencode, urlsplit
 from burst_guard.models import IncomingMessage
 
 _URL_RE = re.compile(r"(?:https?://|www\.)[^\s<>\[\]{}\"']+", re.IGNORECASE)
+_BILIBILI_BVID_RE = re.compile(r"(?<![0-9A-Za-z])BV[0-9A-Za-z]{10}(?![0-9A-Za-z])")
 _TRAILING_PUNCTUATION = ".,;:!?)]}\uff0c\u3002\uff1b\uff1a\uff01\uff1f\uff09\u3011\u300b"
 _TRACKING_QUERY_KEYS = frozenset(
     {
@@ -75,6 +76,14 @@ def extract_urls(message: IncomingMessage) -> tuple[str, ...]:
     for value in (message.text, message.caption):
         if value:
             found.extend(match.group(0) for match in _URL_RE.finditer(value))
+    return tuple(found)
+
+
+def extract_bilibili_bvids(message: IncomingMessage) -> tuple[str, ...]:
+    found: list[str] = []
+    for value in (message.text, message.caption):
+        if value:
+            found.extend(match.group(0) for match in _BILIBILI_BVID_RE.finditer(value))
     return tuple(found)
 
 
@@ -155,6 +164,10 @@ def candidate_url_keys(message: IncomingMessage, domains: frozenset[str]) -> fro
         identity_key = _platform_identity_key(url, domain)
         if identity_key:
             keys.add(identity_key)
+    if any(domain == "bilibili.com" or domain.endswith(".bilibili.com") for domain in domains):
+        for bvid in extract_bilibili_bvids(message):
+            keys.add(f"bilibili.com/video/{bvid}")
+            keys.add(f"platform:bilibili:{bvid.lower()}")
     return frozenset(keys)
 
 
